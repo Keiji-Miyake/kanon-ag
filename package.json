@@ -1,0 +1,30 @@
+{
+  "name": "kanon-ag",
+  "version": "1.0.0",
+  "description": "Kanon: Autonomous AI Agent Orchestration Tool",
+  "type": "module",
+  "scripts": {},
+  "keywords": [
+    "kanon",
+    "orchestration",
+    "autonomous-agents",
+    "copilot",
+    "claude",
+    "codex",
+    "cursor",
+    "gemini",
+    "ai-agents",
+    "coding-assistant"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Keiji-Miyake/kanon-ag.git"
+  },
+  "author": "Keiji Miyake",
+  "license": "MIT",
+  "devDependencies": {
+    "chalk": "^5.3.0",
+    "glob": "^10.3.10",
+    "gray-matter": "^4.0.3"
+  }
+}
