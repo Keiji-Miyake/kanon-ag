@@ -1,28 +1,63 @@
 # Kanon 開発 TODO
 
-Kanon（カノン）オーケストレーションツールの開発ロードマップに基づいた現在のタスク一覧です。
+Kanon（カノン）オーケストレーションツールの開発ロードマップ・タスク一覧です。
 
-## 🚀 Phase 1: コア基盤の構築 (In Progress)
+## ✅ Phase 1: ドメイン設計とコア基盤の構築（完了）
 
-- [ ] **Message Bus（通信基盤）の実装**
-  - エージェント間の JSON メッセージ送受信の仕組み。
-  - 非同期通信ログの記録機能。
-- [ ] **Conductor（指揮者）プロトタイプの作成**
-  - 入力プロンプトの読み込み。
-  - ワークフロー初期化処理。
+純粋なビジネスロジックとドメインモデルを定義します。
 
-## 🧠 Phase 2: エージェント定義の実装
+- [x] `domain/models/promptFacet.ts` の実装 (5ファセットの型定義)
+- [x] `domain/models/agentState.ts`, `feedback.ts` の実装
+- [x] `domain/models/fsmNode.ts` の実装 (ノード・エッジの定義)
+- [x] `domain/repositories/` 配下の抽象インターフェース定義 (Blackboard, Sandbox)
 
-- [ ] **PMエージェント の定義と実装**
-  - 要求からタスク分割 (`TODO.md` の生成など) のプロンプトチューニング。
-- [ ] **Programmerエージェント の定義と実装**
-- [ ] **Testerエージェント の定義と実装（Validation Loop）**
-- [ ] **Operatorエージェント の定義と実装（Git/File操作）**
+## ✅ Phase 2: ユースケース層の実装（完了）
 
-## 🌐 Phase 3: インテグレーション
+決定論的なルーティングとプロンプト制御機能を実装します。
 
-- [ ] **Antigravity 拡張機能への統合**
-  - パネルUIとの連携。
-  - コマンド（`/kanon`等）の追加。
-- [ ] **E2E シナリオ検証**
-  - 「Todoアプリ」等のサンプルタスクを用いた全自動開発の通しテスト。
+- [x] `usecases/prompt/synthesizer.ts` の実装 (Policy末尾配置ロジック)
+- [x] `usecases/prompt/feedbackInjector.ts` の実装 (指摘事項の動的合成)
+- [x] `domain/services/mergeGateway.ts` の実装 (all/any集約条件ロジック)
+- [x] `usecases/orchestration/transitionEngine.ts` の実装 (FSMに基づく状態遷移)
+
+## ✅ Phase 3: インフラストラクチャ・外部統合と環境サンドボックス（完了）
+
+外部依存（Git, LLM, KV Storeなど）と連携する実装を提供します。
+
+- [x] `infrastructure/git/localGitSandbox.ts` (Git Worktree操作の実装)
+- [x] `usecases/environment/worktreeManager.ts` によるタスクごとの隔離環境管理の結合
+- [x] `infrastructure/contextBus/inMemoryBlackboard.ts` (共有黒板パターンの実装)
+- [x] YAML等でのワークフロー定義読み込み (`yamlWorkflowParser.ts`)
+
+## ✅ Phase 4: エージェントループと並行処理の結合（完了）
+
+複数のエージェントが協調して動作する並行修正ループを完成させます。
+
+- [x] `ReviewOrchestrator` クラスの実装と非同期レビュー実行の基盤
+- [x] レビュアーからのフィードバック集約と `MergeGateway` への転送処理
+- [x] 差し戻し時の `Instruction` 再生成ループ（自律デバッグループ）のE2E動作保証
+
+## ✅ Phase 5: テスト基盤とUnit Tests（完了）
+
+- [x] Vitestによるコアシステムユニットテスト基盤の構築（58件・全パス）
+  - `MergeGateway` / `PromptSynthesizer` / `FeedbackInjector` / `TransitionEngine` / `YamlWorkflowParser` / `ConfigLoader`
+
+## ✅ Phase 6: プロンプト品質強化・設定ファイル機能（完了）
+
+- [x] `plan-task.txt` / `execute-plan.txt` に依存関係・初期化・QAエコシステム構築の指示を追加
+- [x] `kanon-cli.json` / `.kanonrc` によるプロジェクト別設定のサポート（`worktreeDir`・`maxRetries`）
+- [x] `kanon-config.schema.json` (エディタ補完・バリデーション用 JSON Schema)
+
+## ✅ Phase 7: UI/インテグレーション（完了）
+
+- [x] Antigravity / ダッシュボードUIとの統合の安定化
+- [x] CLI (`kanon` コマンド) 経由での新アーキテクチャ版実行の完全サポート
+- [x] `redisBlackboard.ts` (Redis を使った分散共有黒板の実装)
+- [x] E2Eテストの復旧・強化
+
+## 🔮 将来の検討事項
+
+- 多言語プロジェクト（Python, Go, Rust）での実績確認
+- .kanon/config.json の追加オプション（タイムアウト、並行エージェント数など）
+- ダッシュボードでのリトライ履歴の可視化
+- タスク名の自動サニタイズ（長文のタスク名をGitブランチ名に変換する際のエラー防止等、WorktreeManagerの堅牢化）

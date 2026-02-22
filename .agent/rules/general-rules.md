@@ -22,3 +22,14 @@ trigger: always_on
 - `.agents/skills/`: （旧構成）同上。
 
 自作スキルの開発・修正は、必ずプロジェクトルートの `./skills/` ディレクトリ内で行ってください。
+
+## Git Worktree の使用強制 (Enforce Git Worktree Usage)
+
+タスクを開始する際は、必ず `git worktree` を使用して作業ディレクトリをプロジェクトの1つ上の階層に作成し、そこで作業を行ってください。
+ブランチ名は [Conventional Commits](https://www.conventionalcommits.org/) の形式に従い、ディレクトリ名はブランチ名からプレフィックス（feat/ など）を除いたものにしてください。
+
+作成コマンド例:
+`git worktree add ../<branch-name-without-prefix> -b <feature-branch-name> main`
+(例: `git worktree add ../multi-agent-chat-ui -b feat/multi-agent-chat-ui main`)
+
+メインの作業ツリーを直接変更することは避けてください。

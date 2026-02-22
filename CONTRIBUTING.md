@@ -1,44 +1,71 @@
-# Kanon への貢献 (Contributing to Kanon)
+# Contributing to Kanon
 
-Kanon への貢献をご検討いただきありがとうございます！
-Kanon は、複数の AI エージェントを連携させて「自律型の開発チーム」を構築するためのオープンソースツールです。
+Thank you for your interest in contributing! This document provides guidelines for contributing to the Kanon orchestration CLI.
 
-## 開発環境のセットアップ
+## Getting Started
 
-1. リポジトリのフォークとクローン
+1. Fork this repository
+2. Clone your fork: `git clone https://github.com/Keiji-Miyake/kanon-ag.git`
+3. Create a branch: `git checkout -b feat/my-feature`
+4. Install dependencies: `npm install`
 
-   ```bash
-   git clone https://github.com/Keiji-Miyake/kanon-ag.git
-   ```
+## Development
 
-2. 依存関係のインストール
+### Build
 
-   ```bash
-   npm install
-   ```
+```bash
+# Build CLI
+npm run build:cli
 
-3. ブランチの作成
+# Build VS Code extension
+npm run build:extension
 
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
+# Build all
+npm run build
+```
 
-## プロジェクトの思想
+### Test
 
-Kanon は「指揮者 (Conductor)」を中心としたハブ・アンド・スポーク型のアーキテクチャを採用しています。
-機能追加やエージェント連携のプロンプト（Skill）追加に際しては、[ARCHITECTURE.md](./docs/ARCHITECTURE.md) をご一読いただき、全体設計との整合性を意識してください。
+```bash
+# Run unit tests (Vitest)
+npm run test:unit
+```
 
-## 開発ルール
+### Project Structure
 
-- **ドキュメント駆動**: 大きな機能追加時は必ず設計ドキュメントを作成し、議論を行なってください。
-- **言語ポリシー**: 本プロジェクト内のすべてのドキュメント、コミットメッセージ、Issue、PRの基本言語は**日本語**とします。
+See [ARCHITECTURE.md](./docs/ARCHITECTURE.md) for detailed architecture documentation.
 
-## プルリクエスト (PR) のフロー
+```tree
+src/
+├── cli/            # CLI entry point, agent runner, config loader
+├── domain/         # Pure business logic (no external deps)
+├── usecases/       # Orchestration & prompt use cases
+├── infrastructure/ # External integrations (Git, Redis, etc.)
+└── extension/      # VS Code extension (Antigravity Dashboard)
+tests/              # Vitest unit tests (mirrors src/ structure)
+skills/             # Agent skill definitions (SKILL.md files)
+```
 
-1. あなたのブランチで変更をコミットします。コミットメッセージは [Conventional Commits](https://www.conventionalcommits.org/ja/v1.0.0/) に従ってください。
-2. 変更内容を明確に記述したPRを作成します。
-3. 他のコントリビューターによるレビューを受け、修正があれば反映します。
+## Pull Request Process
 
-## ライセンス
+1. Ensure your changes pass all builds and tests
+2. Follow [Conventional Commits](https://www.conventionalcommits.org/) for commit messages
+3. Write a clear PR description explaining:
+   - What the change does
+   - Why it is needed
+   - How it was tested
 
-貢献いただいたコードおよびドキュメントは、すべて MIT ライセンスのもとで公開されることに同意したものとみなされます。
+## Code of Conduct
+
+- Be respectful and inclusive
+- Provide constructive feedback
+- Focus on quality and maintainability
+- Help others learn and improve
+
+## Questions?
+
+Open an issue if you have questions or need help!
+
+## License
+
+By contributing, you agree that your contributions will be licensed under the MIT License.

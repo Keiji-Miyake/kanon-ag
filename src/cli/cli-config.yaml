@@ -1,0 +1,72 @@
+language: ja
+
+default_cli: gemini
+
+# エージェント設定 (Role-based Model Configuration)
+# 役割ごとに使用するCLI、モデル、およびフォールバック（代わりのモデル・CLI）を定義します。
+agents:
+  architect:
+    cli: gemini
+    model_primary: gemini-3.1-pro-preview
+    model_backups: gemini-2.5-pro, gemini-3-flash-preview
+
+  reviewer:
+    cli: gemini
+    model_primary: gemini-3.1-pro-preview
+    model_backups: gemini-2.5-pro, gemini-3-flash-preview
+    cli_backup: copilot
+    cli_backup_model: claude-opus-4.6
+
+  developer:
+    cli: opencode
+    model_primary: github-copilot/gpt-5-mini
+    model_backups: github-copilot/claude-sonnet-4.6, github-copilot/gpt-5.4
+    cli_backup: copilot
+    cli_backup_model: github-copilot/gpt-5-mini
+
+  creator:
+    cli: copilot
+    model_primary: gpt-5-mini
+    model_backups: gpt-4.1
+    cli_backup: gemini
+    cli_backup_model: gemini-2.5-flash-lite
+
+  tester:
+    cli: copilot
+    model_primary: gpt-5-mini
+    model_backups: gpt-4.1
+    cli_backup: gemini
+    cli_backup_model: gemini-2.5-flash-lite
+
+# スキルと使用するデフォルトのCLIのマッピング
+skill_cli_mapping:
+  architect: gemini
+  reviewer: gemini
+  developer: opencode
+  creator: copilot
+  tester: copilot
+
+# CLI のコマンドオプション定義
+cli_definitions:
+  gemini:
+    command: gemini
+    prompt_flag: "-p"
+    auto_approve: "--approval-mode=yolo"
+    output_format: "-o json"
+    workspace_flag: "--include-directories"
+    resume_flag: "--resume"
+  copilot:
+    command: copilot
+    prompt_flag: "-p"
+    auto_approve: "--yolo"
+    output_format: null
+    workspace_flag: "--add-dir"
+    resume_flag: "--resume"
+  opencode:
+    command: opencode
+    subcommand: run
+    prompt_flag: null
+    auto_approve: null
+    output_format: "--format json"
+    workspace_flag: null
+    resume_flag: "--continue"

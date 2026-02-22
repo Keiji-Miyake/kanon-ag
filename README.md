@@ -1,37 +1,130 @@
-# Kanon (カノン)
+# 🌌 Kanon — Autonomous AI Orchestration CLI
 
-**Kanon** は、複数の AI エージェントを連携させて「自律型の開発チーム」を構築するための、Antigravity 拡張オーケストレーションツールです。
+[日本語版はこちら](./README.ja.md)
 
-## 🌟 プロジェクトの目的
-人間の開発チームのように、「プロジェクトマネージャー (PM)」「プログラマー」「テスター」といった役割を持つ複数の AI エージェントを立ち上げ、彼らを自動で連携させることで、設計からプログラミング、テスト、機能追加までの全工程を自走させる仕組みを提供します。
+Kanon is an autonomous orchestration tool that integrates multiple AI agents (Gemini, OpenCode-ai, GitHub Copilot) to drive the full software development lifecycle — from planning to code review — through a multi-agent FSM pipeline.
 
-## 🛠 主な機能要件
+## ✨ Key Features
 
-1.  **エージェント管理 (Agent Management)**:
-    - 異なる役割（プロンプトや権限）を持つ AI エージェントを複数定義・起動・管理。
-2.  **タスクの分割と割り当て (Task Decomposition & Assignment)**:
-    - 開発要件を小さなタスクに分解し、最適なエージェントへ自動割り当て。
-3.  **エージェント間通信 (Inter-Agent Communication)**:
-    - エージェント同士が情報を共有し、進捗や問題点をやり取りするメッセージング基盤。
-4.  **自動レビューと修正 (Auto Review & Self-Healing)**:
-    - プログラマーが書いたコードをテスターが自動検証し、エラーがあれば自動で修正ループを回す。
-5.  **外部ツール連携 (Tool Integration)**:
-    - ファイルシステム、Git、各種自動化ツール（CI/CD等）とのシームレスな連携。
+- **Multi-Agent Orchestration**: Architect → Developer → Reviewer pipeline using configurable AI CLIs
+- **Autonomous Gatekeeper**: Automatically validates the generated code (lint/build) and triggers self-correction loops
+- **`kanon-cli.json` Configuration**: Per-project customization of agent mapping, worktree path, and retry count
+- **Antigravity Dashboard**: Real-time monitoring of agent activity via VS Code sidebar + WebSocket streaming
+- **Domain-Driven Core**: Built on Clean Architecture with FSM-based state management
 
-## 🏗 基本設計（プロトタイプ案）
+## 🚀 Quick Start
 
-Kanon は「指揮者 (Conductor)」を中心としたハブ・アンド・スポーク型の構造を採用します。
+### Installation
 
--   **Conductor (指揮者)**: プロジェクト全体を俯瞰し、タスクの分解と進捗管理、エージェント間の調停を行います。
--   **Agent Pool**: 特定の役割に特化したエージェント群。
--   **Context Bus (通信基盤)**: 全エージェントが共有する「プロジェクトの文脈（現在のコード、設計図、課題）」を管理する場所。
+```bash
+npm install
+npm run build:cli
+npm link   # makes `kanon` available globally
+```
 
-## 🚀 開発ロードマップ
+### Run a Task
 
-1.  エージェント間の通信基盤（メッセージバス）の構築
-2.  役割別プロンプトエンジニアリングとエージェント定義
-3.  タスク分割アルゴリズムの実装
-4.  Antigravity への統合
+```bash
+# Create an implementation plan
+kanon plan --task="Add user authentication to the API"
 
----
-(C) 2026 Kanon Project / Keiji Miyake
+# Execute the plan (with autonomous review & correction loop)
+kanon execute
+
+# Final review
+kanon review
+```
+
+### Start the Dashboard (VS Code)
+
+```bash
+kanon ui   # starts the WebSocket server on port 3001
+```
+
+Open VS Code and click the 🚀 icon in the sidebar to open the Antigravity Dashboard.
+
+## ⚙️ Configuration (`.kanon/config.json`)
+
+When you initialize a Kanon project with `kanon init`, a `.kanon/config.json` file is automatically generated.
+This file allows you to customize the AI CLI assigned to each agent role, specific models to run, and other runtime behaviors.
+
+```json
+{
+  "defaultCli": "gemini",
+  "agents": {
+    "architect": {
+      "command": "gemini",
+      "model": "gemini-3.1-pro"
+    },
+    "developer": {
+      "command": "opencode",
+      "model": "claude-4.6-opus"
+    },
+    "reviewer": {
+      "command": "copilot",
+      "model": "gpt-5.3-codex"
+    }
+  },
+  "worktreeDir": "worktree",
+  "maxRetries": 3
+}
+```
+
+| Field | Description | Default |
+|---|---|---|
+| `defaultCli` | Default AI command CLI to use (e.g. `gemini`, `copilot`, `opencode`) | `"gemini"` |
+| `agents.*.command` | Specific CLI assigned to a given agent role. You can also define custom roles like `qa-tester` or `docs-writer`. | (uses `defaultCli`) |
+| `agents.*.model` | The specific LLM model passed to the CLI as `--model` | - |
+| `worktreeDir` | Directory where separate git worktrees are created for tasks | `"worktree"` |
+| `maxRetries` | Maximum number of retries for the self-correction loop when Gatekeeper review fails | `3` |
+
+> ℹ️ **Legacy compatibility**: `kanon-cli.json` and `.kanonrc` placed at the project root are still supported, but `.kanon/config.json` takes precedence if both exist.
+
+**Editor Autocompletion Schema**:
+A JSON Schema dictionary for VS Code and other editors is provided at [`kanon-config.schema.json`](./kanon-config.schema.json) to enable IDE autocompletion for your `.kanon/config.json`.
+
+## 🧪 Testing
+
+```bash
+# Unit tests (Domain / Use Cases / Infrastructure layers)
+npm run test:unit
+
+# Build verification
+npm run build:cli
+```
+
+The unit test suite covers 58 test cases across 8 test files using [Vitest](https://vitest.dev). See [`docs/TESTING.md`](./docs/TESTING.md) for details.
+
+## 🏗️ Project Structure
+
+```
+src/
+├── cli/                    # CLI entry point, agent runner, config loader
+│   ├── orchestrate.ts      # Main kanon command
+│   ├── cli-resolver.ts     # CLI detection & config loading (kanon-cli.json)
+│   └── prompts/            # LLM prompt templates
+├── domain/                 # Pure business logic (no external deps)
+│   ├── models/             # FSM nodes, agent state, feedback, prompt facets
+│   └── services/           # MergeGateway (all/any aggregation)
+├── usecases/               # Orchestration & prompt use cases
+│   ├── orchestration/      # TransitionEngine, ReviewOrchestrator
+│   └── prompt/             # PromptSynthesizer, FeedbackInjector
+└── infrastructure/         # External integrations
+    ├── config/             # YamlWorkflowParser
+    └── contextBus/         # InMemoryBlackboard
+tests/                      # Vitest unit tests (mirrors src/ structure)
+skills/                     # Agent skill definitions (SKILL.md files)
+docs/                       # Architecture docs, TODO, testing guide
+```
+
+## 📚 Documentation
+
+- [Architecture](./docs/ARCHITECTURE.md)
+- [Testing Strategy](./docs/TESTING.md)
+- [TODO / Roadmap](./docs/TODO.md)
+- [Getting Started](./docs/GET_STARTED.ja.md)
+- [Contributing](./CONTRIBUTING.md)
+
+## 📝 License
+
+MIT — see [LICENSE](./LICENSE) for details.
