@@ -1,0 +1,12 @@
+Plan: {{PLAN}}
+Files:
+{{FILE_LIST}}
+
+Implement the changes according to the plan.
+
+IMPORTANT:
+- You must create or update TEST FILES as specified in the plan.
+- Ensure the code allows the project's build and test commands to pass (e.g., `npm run build && npm test`, `cargo build && cargo test`, `go build ./... && go test ./...`).
+- If you are fixing a bug, add a regression test.
+- **Dependencies**: When installing packages, include ALL implicit peer dependencies and recommended libraries as identified in the plan. Install them together in a single command where possible.
+- **Entry Point Initialization**: If a foundational SDK or library was introduced, ensure the import and initialization code is placed at the very top of the project's entry point file (e.g., index.ts, main.py, main.go) — before all other application code.

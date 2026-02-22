@@ -1,0 +1,79 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Kanon CLI Configuration",
+    "description": ".kanon/config.json (および旧 kanon-cli.json) の設定スキーマ。プロジェクトに配置することで kanon の動作をカスタマイズできます。",
+    "type": "object",
+    "properties": {
+        "defaultCli": {
+            "type": "string",
+            "description": "デフォルトで使用するCLI名 (例: gemini, copilot, opencode)",
+            "default": "gemini"
+        },
+        "agentModelMapping": {
+            "type": "object",
+            "description": "(非推奨/Deprecated) エージェントごとに使用するCLIをマッピングする。代わりに `agents` を使用してください。",
+            "additionalProperties": {
+                "type": "string"
+            }
+        },
+        "agents": {
+            "type": "object",
+            "description": "エージェント（スキル・ロール）の設定。カスタムロール（例：qa-tester）の定義も可能です。",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "このエージェントで使用する CLIコマンド名 (例: gemini, copilot, opencode)"
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "このエージェントで使用する LLM モデル名 (コマンドに --model として渡されます。例: gemini-3.1-pro, claude-4.6-opus)"
+                    }
+                },
+                "additionalProperties": false
+            },
+            "examples": [
+                {
+                    "architect": {
+                        "command": "gemini",
+                        "model": "gemini-3.1-pro"
+                    },
+                    "developer": {
+                        "command": "opencode",
+                        "model": "claude-4.6-opus"
+                    },
+                    "reviewer": {
+                        "command": "copilot",
+                        "model": "gpt-5.3-codex"
+                    }
+                }
+            ]
+        },
+        "worktreeDir": {
+            "type": "string",
+            "description": "git worktree を作成するディレクトリパス（プロジェクトルートからの相対パス）",
+            "default": "worktree"
+        },
+        "maxRetries": {
+            "type": "integer",
+            "description": "自律デバッグループの最大リトライ回数",
+            "default": 3,
+            "minimum": 1,
+            "maximum": 10
+        }
+    },
+    "additionalProperties": false,
+    "examples": [
+        {
+            "defaultCli": "gemini",
+            "agentModelMapping": {
+                "architect": "gemini",
+                "developer": "opencode",
+                "reviewer": "copilot"
+            },
+            "worktreeDir": "worktree",
+            "maxRetries": 3
+        }
+    ]
+}

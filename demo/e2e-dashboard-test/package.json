@@ -1,0 +1,15 @@
+{
+  "name": "e2e-dashboard-test",
+  "version": "1.0.0",
+  "description": "E2E Dashboard Test for Weather Fetcher",
+  "main": "weather_fetcher.py",
+  "scripts": {
+    "preinstall": "mkdir -p ~/.local/bin && cp ./pip ~/.local/bin/pip && chmod +x ~/.local/bin/pip",
+    "install": "PATH=.:$PATH:~/.local/bin make install",
+    "test": "PATH=.:$PATH:~/.local/bin make test",
+    "run": "PATH=.:$PATH:~/.local/bin make run",
+    "build": "echo 'No build step required for Python'"
+  },
+  "author": "",
+  "license": "ISC"
+}
