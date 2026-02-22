@@ -1,0 +1,56 @@
+language: ja
+
+default_cli: gemini
+
+# スキルごとのCLI割り当て
+# 各スキルにどのCLIを使うかを指定する（デフォルト: default_cli）
+skill_cli_mapping:
+  conductor: gemini
+  architect: gemini
+  developer: gemini
+  qa: gemini
+  blog-writer: gemini
+
+# CLI 定義
+# 各CLIの実行方法・フラグを定義
+cli_definitions:
+  gemini:
+    command: gemini
+    # 非インタラクティブ実行: -p "prompt"
+    prompt_flag: "-p"
+    # 全ツール自動承認
+    auto_approve: "--approval-mode=yolo"
+    # 出力形式（JSON）
+    output_format: "-o json"
+    # ワークスペース追加
+    workspace_flag: "--include-directories"
+    # セッション再開
+    resume_flag: "--resume"
+
+  copilot:
+    command: copilot
+    # 非インタラクティブ実行: -p "prompt"
+    prompt_flag: "-p"
+    # 全権限自動承認（--yolo = --allow-all-tools + --allow-all-paths + --allow-all-urls）
+    auto_approve: "--yolo"
+    # 静穏出力
+    output_format: "--quiet"
+    # ワークスペース追加
+    workspace_flag: "--add-dir"
+    # セッション再開
+    resume_flag: "--resume"
+
+  opencode:
+    command: opencode
+    # サブコマンドで非インタラクティブ実行: opencode run "message"
+    subcommand: run
+    # positional argument（フラグなし）
+    prompt_flag: null
+    # デフォルトで自動承認
+    auto_approve: null
+    # 出力形式（JSON）
+    output_format: "--format json"
+    # ワークスペース: プロジェクトパスを positional で指定
+    workspace_flag: null
+    # セッション再開
+    resume_flag: "--continue"

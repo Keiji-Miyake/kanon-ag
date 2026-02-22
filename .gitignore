@@ -30,6 +30,22 @@ tmp/
 temp/
 *.tmp
 
+# Kanon 一時ファイル
+.kanon/
+tmp_*
+walkthrough.md
+implementation_plan.md
+task.md
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Build artifacts
+*.vsix
+
+
+
 # Environment
 .env
 .env.local
@@ -39,13 +55,15 @@ temp/
 dist/
 build/
 
-# Agent
-.agent/skills/
-.agent/brain/
-.agents/skills/
-.gemini/skills/
-.github/skills/
-.opencode/skills/
+# Notes
+thought
+
+
+.gemini/
+.github/
+.opencode/
+.takt/
 
 # Skill examples (generated outputs)
-skills/*/examples/
+skills/*/examples/worktree/
+.memories/

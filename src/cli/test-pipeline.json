@@ -1,0 +1,30 @@
+{
+    "name": "test-pipeline",
+    "description": "Orchestrator動作確認用パイプライン",
+    "phases": [
+        {
+            "name": "test-phase",
+            "displayName": "🧪 Test Phase (Architect)",
+            "skill": "architect",
+            "checks": [
+                {
+                    "type": "file_exists",
+                    "path": "hello-architect.txt"
+                }
+            ]
+        }
+    ],
+    "settings": {
+        "maxRetries": 1,
+        "docsDir": "docs"
+    },
+    "parallelTiers": [
+        {
+            "id": "tier-1",
+            "name": "Tier 1: Architect Test",
+            "skills": [
+                "architect"
+            ]
+        }
+    ]
+}

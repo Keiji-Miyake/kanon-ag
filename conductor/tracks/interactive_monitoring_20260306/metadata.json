@@ -1,0 +1,8 @@
+{
+  "track_id": "interactive_monitoring_20260306",
+  "type": "feature",
+  "status": "new",
+  "created_at": "2026-03-06T13:00:00Z",
+  "updated_at": "2026-03-06T13:00:00Z",
+  "description": "Interactive monitoring and control with VS Code chat and stop button"
+}

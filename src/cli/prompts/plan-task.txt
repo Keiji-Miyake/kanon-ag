@@ -1,0 +1,16 @@
+Task: {{TASK}}
+Files:
+{{FILE_LIST}}
+
+Create a detailed implementation plan.
+
+IMPORTANT:
+- You must include a "Verification Plan" section.
+- If no test framework is present, plan to install one (e.g., Jest, Vitest, pytest, go test).
+- List specific test cases you will create to verify the changes.
+- Ensure the plan includes creating or updating test files.
+- **Dependencies**: When installing packages, identify and include ALL implicit peer dependencies and recommended libraries. Do not assume any package is pre-installed.
+- **Entry Point Initialization**: If a foundational SDK or library (e.g., for error tracking, logging, database) is introduced, the plan MUST include placing the import and initialization code at the very top of the project's entry point file (e.g., index.ts, main.py, main.go).
+- **QA Ecosystem**: Plan for a comprehensive QA setup — not just the test runner itself, but also: test configuration files, mock libraries, and registering a standard test command in the project's task runner (e.g., `npm test`, `cargo test`, `go test ./...`, `pytest`).
+
+Structure your response as markdown.
