@@ -1,28 +1,43 @@
 # Kanon 開発 TODO
 
-Kanon（カノン）オーケストレーションツールの開発ロードマップに基づいた現在のタスク一覧です。
+Kanon（カノン）オーケストレーションツールの次世代アーキテクチャに基づいた開発ロードマップ・タスク一覧です。
 
-## 🚀 Phase 1: コア基盤の構築 (In Progress)
+## 🚀 Phase 1: ドメイン設計とコア基盤の構築
 
-- [ ] **Message Bus（通信基盤）の実装**
-  - エージェント間の JSON メッセージ送受信の仕組み。
-  - 非同期通信ログの記録機能。
-- [ ] **Conductor（指揮者）プロトタイプの作成**
-  - 入力プロンプトの読み込み。
-  - ワークフロー初期化処理。
+純粋なビジネスロジックとドメインモデルを定義します。
 
-## 🧠 Phase 2: エージェント定義の実装
+- [ ] `domain/models/promptFacet.ts` の実装 (5ファセットの型定義)
+- [ ] `domain/models/agentState.ts`, `feedback.ts` の実装
+- [ ] `domain/models/fsmNode.ts` の実装 (ノード・エッジの定義)
+- [ ] `domain/repositories/` 配下の抽象インターフェース定義 (Blackboard, Sandbox)
 
-- [ ] **PMエージェント の定義と実装**
-  - 要求からタスク分割 (`TODO.md` の生成など) のプロンプトチューニング。
-- [ ] **Programmerエージェント の定義と実装**
-- [ ] **Testerエージェント の定義と実装（Validation Loop）**
-- [ ] **Operatorエージェント の定義と実装（Git/File操作）**
+## 🧩 Phase 2: ユースケース層の実装 (オーケストレーションの中核)
 
-## 🌐 Phase 3: インテグレーション
+決定論的なルーティングとプロンプト制御機能を実装します。
 
-- [ ] **Antigravity 拡張機能への統合**
-  - パネルUIとの連携。
-  - コマンド（`/kanon`等）の追加。
-- [ ] **E2E シナリオ検証**
-  - 「Todoアプリ」等のサンプルタスクを用いた全自動開発の通しテスト。
+- [ ] `usecases/prompt/synthesizer.ts` の実装 (Policy末尾配置ロジック)
+- [ ] `usecases/prompt/feedbackInjector.ts` の実装 (指摘事項の動的合成)
+- [ ] `domain/services/mergeGateway.ts` の実装 (all/any集約条件ロジック)
+- [ ] `usecases/orchestration/transitionEngine.ts` の実装 (FSMに基づく状態遷移)
+
+## 🏗 Phase 3: インフラストラクチャ・外部統合と環境サンドボックス
+
+外部依存（Git, LLM, KV Storeなど）と連携する実装を提供します。
+
+- [ ] `infrastructure/git/localGitSandbox.ts` (Git Worktree操作の実装)
+- [ ] `usecases/environment/worktreeManager.ts` によるタスクごとの隔離環境管理の結合
+- [ ] `infrastructure/contextBus/redisBlackboard.ts` (共有黒板パターンのインメモリ/Redis実装)
+- [ ] YAML等でのワークフロー定義読み込み (`yamlWorkflowParser.ts`)
+
+## 🤖 Phase 4: エージェントループと並行処理の結合
+
+複数のエージェントが協調して動作する並行修正ループを完成させます。
+
+- [ ] `ReviewOrchestrator` クラスの実装と非同期レビュー実行の基盤
+- [ ] レビュアーからのフィードバック集約と `MergeGateway` への転送処理
+- [ ] 差し戻し時の `Instruction` 再生成ループ（自律デバッグループ）のE2E動作保証
+
+## 🌐 Phase 5: UI/インテグレーション
+
+- [ ] Antigravity / ダッシュボードUIとの統合
+- [ ] CLI (`kanon` コマンド) 経由での新アーキテクチャ版実行のサポート
