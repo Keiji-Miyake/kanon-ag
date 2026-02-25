@@ -88,8 +88,10 @@ npm run test:unit
 
 ### Git Worktree の使用
 
-- タスクを開始する際は、必ず `git worktree` を使用して作業ディレクトリを作成し、そこで作業を行う。
-- ディレクトリは `worktree/` 配下に作成し、名前は [Conventional Commits](https://www.conventionalcommits.org/) の形式に従う（例: `worktree/feat/feature-name`, `worktree/fix/bug-fix`）。
+- タスクを開始する際は、必ず `git worktree` を使用して作業ディレクトリをプロジェクトの1つ上の階層に作成し、そこで作業を行う。
+- ブランチ名は [Conventional Commits](https://www.conventionalcommits.org/) の形式に従い、ディレクトリ名はブランチ名からプレフィックス（feat/ など）を除いたものにする。
+- 作成コマンド例: `git worktree add ../<branch-name-without-prefix> -b <feature-branch-name> main`
+  - (例: `git worktree add ../multi-agent-chat-ui -b feat/multi-agent-chat-ui main`)
 - メインの作業ツリーを直接変更することは避ける。
 
 ### コミットメッセージ
