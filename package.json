@@ -1,20 +1,26 @@
 {
   "name": "kanon-ag",
-  "version": "1.0.0",
-  "description": "Kanon: Autonomous AI Agent Orchestration Tool",
+  "version": "0.0.0",
+  "description": "A powerful orchestration tool for AI coding assistants",
+  "main": "./dist/cli/orchestrate.js",
+  "bin": {
+    "kanon": "./dist/cli/orchestrate.js"
+  },
   "type": "module",
-  "scripts": {},
+  "scripts": {
+    "build:cli": "tsc -p src/cli/tsconfig.json && mkdir -p dist/cli && cp src/cli/cli-config.yaml dist/cli/ && cp src/cli/pipeline.json dist/cli/ && cp -r src/cli/prompts dist/cli/",
+    "build:extension": "tsc -p src/extension/tsconfig.json",
+    "build": "npm run build:cli && npm run build:extension",
+    "test:unit": "vitest run",
+    "test:e2e": "node dist/cli/cli-resolver.js --test",
+    "test": "npm run test:unit"
+  },
   "keywords": [
-    "kanon",
-    "orchestration",
-    "autonomous-agents",
-    "copilot",
-    "claude",
-    "codex",
-    "cursor",
-    "gemini",
+    "orchestrator",
     "ai-agents",
-    "coding-assistant"
+    "antigravity",
+    "kanon",
+    "automation"
   ],
   "repository": {
     "type": "git",
@@ -22,9 +28,20 @@
   },
   "author": "Keiji Miyake",
   "license": "MIT",
-  "devDependencies": {
+  "dependencies": {
     "chalk": "^5.3.0",
+    "gray-matter": "^4.0.3",
+    "redis": "^5.11.0",
+    "ws": "^8.19.0",
+    "yaml": "^2.8.2"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.3",
+    "@types/ws": "^8.18.1",
+    "@types/yaml": "^1.9.6",
     "glob": "^10.3.10",
-    "gray-matter": "^4.0.3"
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
   }
 }

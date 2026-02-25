@@ -1,0 +1,39 @@
+Analyze the following file list and determine the appropriate commands to validate the project.
+
+Project Files:
+{{FILE_LIST}}
+
+Identify the project type (e.g., Node.js, Python, Go, Rust) and return a JSON list of commands to:
+1. Install dependencies (if needed)
+2. Run tests
+3. Build the project (if applicable)
+
+IMPORTANT:
+- If a specific test framework (e.g., pytest, jest) is NOT listed in configuration files (requirements.txt, package.json), prefer standard libraries (e.g., `python -m unittest`, `go test`).
+- Do not assume external tools are installed unless evident from the file list.
+
+Return ONLY valid JSON.
+Example for Node.js:
+[
+  "npm install",
+  "npm test"
+]
+
+Example for Python (Standard):
+[
+  "python -m unittest"
+]
+
+Example for Python (with pytest in requirements.txt):
+[
+  "pip install -r requirements.txt",
+  "pytest"
+]
+
+Example for Rust:
+[
+  "cargo test",
+  "cargo build --release"
+]
+
+If no validation is possible (no dependencies, tests, or build scripts), return an empty list [].

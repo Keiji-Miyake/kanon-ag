@@ -30,6 +30,23 @@ tmp/
 temp/
 *.tmp
 
+# Kanon 一時ファイル
+.kanon/
+tmp_*
+walkthrough.md
+implementation_plan.md
+task.md
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Build artifacts
+*.vsix
+
+# Git Worktree 作業ディレクトリ
+worktree/
+
 # Environment
 .env
 .env.local
@@ -38,6 +55,9 @@ temp/
 # Build output
 dist/
 build/
+
+# Notes
+thought
 
 # Agent
 .agent/skills/
@@ -48,4 +68,4 @@ build/
 .opencode/skills/
 
 # Skill examples (generated outputs)
-skills/*/examples/
+skills/*/examples/worktree/

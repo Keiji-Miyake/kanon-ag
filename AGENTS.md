@@ -1,50 +1,109 @@
-# Kanon Agent Development Guidelines
+# Agent Development Guidelines
 
-**Kanon** におけるエージェントの開発と、エージェント間の連携に関するガイドラインです。
+## プロジェクトの目的
 
-## 🎭 エージェントの役割 (Roles)
+**Kanon** は、複数のAIエージェント（Gemini, OpenCode-ai, GitHub Copilot 等）を統合し、ソフトウェア開発ライフサイクル全体（計画 → 実装 → レビュー）を自律的に遂行するオーケストレーションCLIです。
+有限オートマトン（FSM）に基づく**決定論的ルーティング**と、**Faceted Prompting** によるプロンプト合成を核心技術としています。
 
-Kanon では、以下の役割（ロール）を持つエージェントを定義し、それぞれに特化したプロンプトと権限を付与します。
+## 技術スタック (Tech Stack)
 
-### 1. **Project Manager (PM) / Conductor (指揮者)**
-- 開発要件からタスクを分解し、担当エージェントへ割り当てます。
-- プロジェクト全体の進捗管理と、エージェント間の「合意」を調整します。
+- **Runtime**: Node.js (v18+)
+- **Language**: TypeScript (ESM)
+- **Package Manager**: npm
+- **Test Runner**: [Vitest](https://vitest.dev) (v4)
+- **Architecture**: DDD / Clean Architecture
 
-### 2. **Programmer (プログラマー)**
-- 設計（スペック）に基づき、高品質なコードを実装します。
-- 既存コードベースの変更や新機能の追加を担当します。
+## プロジェクト構成
 
-### 3. **Tester (テスター)**
-- プログラマーが作成したコードを自動検証（テスト・レビュー）します。
-- テスト結果から不具合を特定し、修正のためのフィードバックをプログラマーへ返します。
+```tree
+src/
+├── cli/                    # CLIエントリポイント、エージェントランナー、設定ローダー
+│   ├── orchestrate.ts      # kanon コマンド本体
+│   ├── cli-resolver.ts     # CLI検出・設定読み込み
+│   └── prompts/            # LLMプロンプトテンプレート
+├── domain/                 # 純粋なビジネスロジック（外部依存なし）
+│   ├── models/             # FSMノード・エージェント状態・フィードバック・プロンプトファセット
+│   ├── repositories/       # Blackboard・Sandbox インターフェース
+│   └── services/           # MergeGateway（all/any集約条件）
+├── usecases/               # アプリケーションユースケース
+│   ├── orchestration/      # TransitionEngine、ReviewOrchestrator
+│   ├── prompt/             # PromptSynthesizer、FeedbackInjector
+│   └── environment/        # WorktreeManager
+├── infrastructure/         # 外部連携実装
+│   ├── config/             # YamlWorkflowParser
+│   ├── contextBus/         # InMemoryBlackboard, RedisBlackboard
+│   └── git/                # LocalGitSandbox
+└── extension/              # VS Code拡張機能（Antigravity Dashboard）
+tests/                      # Vitestユニットテスト（src/ と同じ階層構成）
+skills/                     # エージェントスキル定義（SKILL.mdファイル）
+demo/                       # デモ・E2Eテスト用プロジェクト
+docs/                       # アーキテクチャドキュメント
+```
 
-### 4. **Operator / Devops (オペレーター)**
-- 外部ツール（Git, CI/CD, デプロイツール）との連携を担当します。
+## 開発原則 (Development Principles)
 
-## 💬 エージェント間通信 (Communication)
+### 1. クリーンアーキテクチャの遵守
 
-エージェント同士は、**Message Bus (メッセージバス)** を介して情報をやり取りします。
+- `domain/` 層は外部依存を持たない純粋なビジネスロジックとして実装する。
+- `usecases/` 層はアプリケーション固有のオーケストレーションロジックを担当する。
+- `infrastructure/` 層が外部システム（Git, LLM, Redis等）との連携を実装する。
 
-- **メッセージの構造**:
-  - `sender`: 送信エージェント ID
-  - `receiver`: 受信エージェント ID（またはブロードキャスト）
-  - `task_id`: 紐づくタスクの ID
-  - `payload`: 作業内容、エラー報告、レビュー結果などの具体的な情報
+### 2. 環境非依存 (Environment Agnostic)
 
-- **修正ループ (Healing Loop)**:
-  1. `Programmer` が実装完了を報告。
-  2. `Tester` が自動テストを実行し、エラー（不具合）を検出。
-  3. `Tester` が `Programmer` へ修正要求（ログを含む）をメッセージで送信。
-  4. `Programmer` が修正し、再度報告。
+- ファイルパスは常にプロジェクトルートからの相対パスを使用する。
+- ユーザーの環境（OS、ユーザー名）に依存する絶対パスを含めないこと。
 
-## ⚠️ 開発の重要事項
+### 3. ドキュメント駆動 (Document-Driven)
 
-- **文脈（Context）の共有**:
-  - 各エージェントは常に「現在のプロジェクトの全体像（Docs/ARCH.md等）」を把握している必要があります。
-- **冪等性 (Idempotency)**:
-  - エージェントによる操作（ファイルの書き換え等）は、何度実行しても期待される最終状態になるように設計してください。
-- **外部ツールへの制御権**:
-  - 権限が過剰にならないよう、最小権限の原則 (PoLP) を適用します。
+- 実装の前に、必ず設計や変更計画を作成・更新する。
+- 変更内容はリリース時に `CHANGELOG.md` に反映する。
 
----
-(C) 2026 Kanon Project / Keiji Miyake
+### 4. AIレビューと品質保証 (AI Review & QA)
+
+- **「自分以外の」AI** によるレビューを想定し、客観的に理解しやすいコードとドキュメントを書く。
+- コミット前には必ずビルドとテストを通すこと。
+
+## 開発ルール (Development Rules)
+
+### ビルドとテスト
+
+```bash
+# CLIのビルド
+npm run build:cli
+
+# VS Code拡張機能のビルド
+npm run build:extension
+
+# 全体ビルド
+npm run build
+
+# ユニットテスト（7ファイル, 56テストケース）
+npm run test:unit
+```
+
+### スキルの作成・修正
+
+- 全てのカスタムスキルは **`skills/`** ディレクトリ以下で管理する。
+- `.agent/skills/`, `.gemini/skills/` などの自動生成ディレクトリを直接編集しない。
+
+### Git Worktree の使用
+
+- タスクを開始する際は、必ず `git worktree` を使用して作業ディレクトリを作成し、そこで作業を行う。
+- ディレクトリは `worktree/` 配下に作成し、名前は [Conventional Commits](https://www.conventionalcommits.org/) の形式に従う（例: `worktree/feat/feature-name`, `worktree/fix/bug-fix`）。
+- メインの作業ツリーを直接変更することは避ける。
+
+### コミットメッセージ
+
+- [Conventional Commits](https://www.conventionalcommits.org/) に従う。
+  - `feat`: 新機能
+  - `fix`: バグ修正
+  - `docs`: ドキュメントのみの変更
+  - `refactor`: 機能追加やバグ修正を含まないコード変更
+  - `chore`: ビルドプロセスや補助ツールの変更
+
+## 関連ドキュメント
+
+- [アーキテクチャ](./docs/ARCHITECTURE.md)
+- [はじめる](./docs/GET_STARTED.ja.md)
+- [コントリビューション](./CONTRIBUTING.ja.md)
+- [README (日本語)](./README.ja.md)

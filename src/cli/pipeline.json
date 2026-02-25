@@ -1,0 +1,133 @@
+{
+    "name": "default-pipeline",
+    "description": "標準的なエージェントチーム開発パイプライン",
+    "phases": [
+        {
+            "name": "init",
+            "displayName": "🎭 Conductor: プロジェクト計画",
+            "skill": "conductor",
+            "checks": [
+                {
+                    "type": "file_exists",
+                    "path": "AGENTS.md"
+                }
+            ]
+        },
+        {
+            "name": "design",
+            "displayName": "📐 Architect: 要件定義・設計",
+            "skill": "architect",
+            "checks": [
+                {
+                    "type": "file_exists",
+                    "path": "docs/SPEC.md"
+                },
+                {
+                    "type": "file_not_empty",
+                    "path": "docs/SPEC.md"
+                },
+                {
+                    "type": "file_exists",
+                    "path": "docs/DESIGN.md"
+                },
+                {
+                    "type": "file_not_empty",
+                    "path": "docs/DESIGN.md"
+                }
+            ]
+        },
+        {
+            "name": "implement",
+            "displayName": "💻 Developer: TypeScript実装",
+            "skill": "developer",
+            "checks": [
+                {
+                    "type": "file_exists",
+                    "path": "tsconfig.json"
+                },
+                {
+                    "type": "glob_exists",
+                    "pattern": "**/*.ts",
+                    "exclude": [
+                        "node_modules/**",
+                        "dist/**",
+                        ".agent/**",
+                        "scripts/**"
+                    ]
+                },
+                {
+                    "type": "command",
+                    "command": "npx -p typescript tsc --noEmit",
+                    "description": "TypeScript型チェック"
+                }
+            ]
+        },
+        {
+            "name": "qa",
+            "displayName": "🧪 QA: 品質保証",
+            "skill": "qa",
+            "checks": [
+                {
+                    "type": "file_exists",
+                    "path": "docs/TEST_PLAN.md"
+                },
+                {
+                    "type": "command",
+                    "command": "npx -p typescript tsc",
+                    "description": "TypeScriptコンパイル"
+                }
+            ]
+        },
+        {
+            "name": "release",
+            "displayName": "📝 Blog-Writer: 成果報告",
+            "skill": "blog-writer",
+            "checks": [
+                {
+                    "type": "file_exists",
+                    "path": "blog-post.md"
+                },
+                {
+                    "type": "file_not_empty",
+                    "path": "blog-post.md"
+                }
+            ]
+        }
+    ],
+    "settings": {
+        "maxRetries": 3,
+        "docsDir": "docs"
+    },
+    "parallelTiers": [
+        {
+            "id": "tier-1",
+            "name": "Phase 1: Planning",
+            "skills": [
+                "conductor"
+            ]
+        },
+        {
+            "id": "tier-2",
+            "name": "Phase 2: Design & Setup",
+            "skills": [
+                "architect",
+                "scaffold"
+            ]
+        },
+        {
+            "id": "tier-3",
+            "name": "Phase 3: Implementation",
+            "skills": [
+                "developer"
+            ]
+        },
+        {
+            "id": "tier-4",
+            "name": "Phase 4: Verification & Release",
+            "skills": [
+                "qa",
+                "blog-writer"
+            ]
+        }
+    ]
+}

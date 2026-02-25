@@ -1,0 +1,66 @@
+{
+    "name": "kanon-antigravity-extension",
+    "displayName": "Kanon on Antigravity",
+    "description": "Native Orchestration Dashboard for Antigravity",
+    "version": "0.0.0",
+    "publisher": "keiji-miyake",
+    "icon": "resources/kanon-icon.png",
+    "engines": {
+        "vscode": "^1.60.0"
+    },
+    "categories": [
+        "Other"
+    ],
+    "main": "./dist/extension.js",
+    "activationEvents": [
+        "onStartupFinished",
+        "onView:kanon.dashboard",
+        "*"
+    ],
+    "contributes": {
+        "commands": [
+            {
+                "command": "kanon.hello",
+                "title": "Kanon: Hello World",
+                "category": "Kanon"
+            },
+            {
+                "command": "kanon.openDashboard",
+                "title": "Kanon: Open Dashboard",
+                "category": "Kanon"
+            }
+        ],
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "kanon-sidebar",
+                    "title": "Kanon",
+                    "icon": "resources/kanon-icon.png"
+                }
+            ]
+        },
+        "views": {
+            "kanon-sidebar": [
+                {
+                    "type": "webview",
+                    "id": "kanon.dashboard",
+                    "name": "Dashboard",
+                    "icon": "resources/kanon-icon.png"
+                }
+            ]
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+        "watch": "tsc -watch -p ./",
+        "lint": "eslint src --ext ts"
+    },
+    "devDependencies": {
+        "@types/node": "16.x",
+        "@types/vscode": "1.16.0",
+        "esbuild": "^0.27.3",
+        "typescript": "^5.1.3"
+    },
+    "dependencies": {}
+}
