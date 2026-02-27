@@ -35,7 +35,7 @@
                 {
                     "id": "kanon-sidebar",
                     "title": "Kanon",
-                    "icon": "resources/kanon-icon.png"
+                    "icon": "resources/kanon-sidebar.svg"
                 }
             ]
         },
@@ -45,7 +45,7 @@
                     "type": "webview",
                     "id": "kanon.dashboard",
                     "name": "Dashboard",
-                    "icon": "resources/kanon-icon.png"
+                    "icon": "resources/kanon-sidebar.svg"
                 }
             ]
         }
