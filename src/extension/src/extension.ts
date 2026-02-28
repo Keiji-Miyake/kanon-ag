@@ -1,11 +1,17 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
+import { WebSocketServer, WebSocket } from 'ws';
+import { createServer } from 'http';
 
-let serverTerminal: vscode.Terminal | undefined;
 let taskTerminal: vscode.Terminal | undefined;
+let wss: WebSocketServer | undefined;
+let wsHttpServer: ReturnType<typeof createServer> | undefined;
+const WS_PORT = 3001;
 
 export function activate(context: vscode.ExtensionContext) {
-    console.log('Kanon Extension v0.0.11 Activated (Workflow UI)!');
+    console.log('Kanon Extension v0.1.0 Activated (Embedded WS Server)!');
+
+    // 拡張機能起動時に WebSocket サーバーを自動起動
+    startEmbeddedServer();
 
     const provider = new KanonDashboardProvider(context.extensionUri);
 
@@ -17,7 +23,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('kanon.hello', () => {
-            vscode.window.showInformationMessage('Hello from Kanon Extension (v0.0.11)!');
+            vscode.window.showInformationMessage('Hello from Kanon Extension (v0.1.0)!');
         }));
 
     context.subscriptions.push(
@@ -27,13 +33,85 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
-    if (serverTerminal) {
-        serverTerminal.dispose();
-    }
     if (taskTerminal) {
         taskTerminal.dispose();
     }
+    stopEmbeddedServer();
 }
+
+// =============================================================================
+// 拡張機能内蔵 WebSocket サーバー
+// =============================================================================
+
+/**
+ * 拡張機能内で WebSocket サーバーを起動する。
+ * CLIツール (kanon run, kanon execute 等) からのログを中継してダッシュボードUIへ流す。
+ * これにより、別途 `kanon ui` プロセスを手動で起動する必要がなくなる。
+ */
+function startEmbeddedServer() {
+    if (wss) return; // 既に起動済み
+
+    wsHttpServer = createServer();
+    wss = new WebSocketServer({ noServer: true });
+
+    wsHttpServer.on('error', (err: any) => {
+        if (err.code === 'EADDRINUSE') {
+            console.log(`[Kanon] WebSocket ポート ${WS_PORT} は既に使用中です。既存のサーバーに接続します。`);
+        } else {
+            console.error('[Kanon] WebSocket サーバーエラー:', err);
+        }
+    });
+
+    wsHttpServer.on('upgrade', (request, socket, head) => {
+        wss!.handleUpgrade(request, socket, head, (ws) => {
+            wss!.emit('connection', ws, request);
+        });
+    });
+
+    wsHttpServer.listen(WS_PORT, () => {
+        console.log(`[Kanon] WebSocket サーバー起動: ws://localhost:${WS_PORT}`);
+    });
+
+    wss.on('connection', (ws: WebSocket) => {
+        console.log('[Kanon] クライアント接続');
+
+        ws.on('close', () => {
+            console.log('[Kanon] クライアント切断');
+        });
+
+        ws.on('message', (message) => {
+            const data = message.toString();
+            // CLI からのログを全接続クライアント（ダッシュボード UI）にブロードキャスト
+            wss!.clients.forEach(client => {
+                if (client !== ws && client.readyState === WebSocket.OPEN) {
+                    client.send(data);
+                }
+            });
+        });
+
+        // 接続時のウェルカムメッセージ
+        ws.send(JSON.stringify({
+            timestamp: new Date().toISOString(),
+            agent: 'system',
+            message: 'Kanon Orchestrator に接続しました'
+        }));
+    });
+}
+
+function stopEmbeddedServer() {
+    if (wss) {
+        wss.close();
+        wss = undefined;
+    }
+    if (wsHttpServer) {
+        wsHttpServer.close();
+        wsHttpServer = undefined;
+    }
+}
+
+// =============================================================================
+// ダッシュボード Webview プロバイダー
+// =============================================================================
 
 class KanonDashboardProvider {
 
@@ -60,12 +138,6 @@ class KanonDashboardProvider {
 
         webviewView.webview.onDidReceiveMessage((data: any) => {
             switch (data.command) {
-                case 'startServer':
-                    this.startKanonServer();
-                    break;
-                case 'stopServer':
-                    this.stopKanonServer();
-                    break;
                 case 'runWorkflow':
                     this.runWorkflow(data.workflow, data.task);
                     break;
@@ -78,11 +150,9 @@ class KanonDashboardProvider {
                     vscode.window.showInformationMessage('Kanon: Opening Antigravity Agent Panel...');
 
                     const chatCommands = [
-                        // Try Antigravity specific commands first
                         { cmd: 'antigravity.agentSidePanel.focus', args: undefined },
-                        { cmd: 'antigravity.sendPromptToAgentPanel', args: data.text }, // Pass string directly to avoid [object Object]
+                        { cmd: 'antigravity.sendPromptToAgentPanel', args: data.text },
                         { cmd: 'antigravity.agentPanel.open', args: undefined },
-                        // Fallbacks
                         { cmd: 'workbench.action.chat.open', args: { query: data.text } },
                         { cmd: 'workbench.panel.chat.view.copilot.focus', args: undefined }
                     ];
@@ -101,13 +171,11 @@ class KanonDashboardProvider {
                             }
                             console.log(`Successfully opened chat with command: ${cmd}`);
 
-                            // If we just focused the panel (cmd 0), we might still need to send the text.
-                            // Let's try to send the prompt using the specific command if the focus worked.
                             if (cmd === 'antigravity.agentSidePanel.focus' && data.text) {
                                 try {
                                     await vscode.commands.executeCommand('antigravity.sendPromptToAgentPanel', data.text);
                                 } catch (e) {
-                                    // Ignore error, maybe text was sent another way or command doesn't exist
+                                    // コマンドが存在しない場合は無視
                                 }
                             }
                         } catch (err) {
@@ -122,53 +190,7 @@ class KanonDashboardProvider {
         });
     }
 
-    public startKanonServer() {
-        if (!serverTerminal) {
-            // Target the user's current project space
-            const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-            serverTerminal = vscode.window.createTerminal({
-                name: 'Kanon Server',
-                cwd: workspaceFolder
-            });
-        }
-        serverTerminal.show();
-
-        // Find the absolute path to this plugin's bundled "orchestrate.js" 
-        // fallback in case 'kanon' is not installed globally in the user's PATH.
-        // Assuming this extension is at `kanon-cli-prototype/src/extension`
-        // and orchestrate.js is at `kanon-cli-prototype/dist/orchestrate.js`
-        const bundledOrchestratePath = vscode.Uri.joinPath(this._extensionUri, '..', '..', 'dist', 'orchestrate.js').fsPath;
-
-        serverTerminal.sendText('echo "Starting Kanon Server..."');
-        // 1. Try global 'kanon ui'
-        // 2. Fallback to directly executing the bundled script
-        serverTerminal.sendText('export NODE_NO_WARNINGS=1');
-        serverTerminal.sendText(`kanon ui || node --no-deprecation "${bundledOrchestratePath}" ui`);
-    }
-
-    public stopKanonServer() {
-        if (serverTerminal) {
-            serverTerminal.dispose();
-            serverTerminal = undefined;
-        }
-        if (taskTerminal) {
-            taskTerminal.dispose();
-            taskTerminal = undefined;
-        }
-
-        // F5リロード等で変数が飛んでも、VScode上に残存している同名ターミナルがあれば確実に強制終了する
-        vscode.window.terminals.forEach(t => {
-            if (t.name === 'Kanon Server' || t.name === 'Kanon Task Execution') {
-                t.dispose();
-            }
-        });
-    }
-
     public runWorkflow(workflow: string, task: string) {
-        if (!serverTerminal) {
-            this.startKanonServer();
-        }
-
         // 実行用のターミナルを作成 または 再利用
         if (!taskTerminal || taskTerminal.exitStatus) {
             const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -191,7 +213,6 @@ class KanonDashboardProvider {
                 cmd = `kanon execute || node --no-deprecation "${bundledOrchestratePath}" execute`;
                 break;
             case 'all':
-                // rudimentary chaining
                 cmd = `kanon run${taskArg} || node --no-deprecation "${bundledOrchestratePath}" run${taskArg}`;
                 break;
         }
@@ -286,11 +307,11 @@ class KanonDashboardProvider {
 
                 /* Agent Colors */
                 .agent-system { border-left-color: #888; color: #aaa; }
-                .agent-antigravity { border-left-color: #569CD6; } /* Blue */
-                .agent-kanon { border-left-color: #4EC9B0; } /* Teal */
-                .agent-gemini { border-left-color: #C586C0; } /* Purple */
-                .agent-opencode { border-left-color: #CE9178; } /* Orange */
-                .agent-gatekeeper { border-left-color: #DCDCAA; } /* Yellow */
+                .agent-antigravity { border-left-color: #569CD6; }
+                .agent-kanon { border-left-color: #4EC9B0; }
+                .agent-gemini { border-left-color: #C586C0; }
+                .agent-opencode { border-left-color: #CE9178; }
+                .agent-gatekeeper { border-left-color: #DCDCAA; }
                 .agent-error { border-left-color: #F44336; background-color: rgba(244, 67, 54, 0.1); }
 
                 /* Chat Area */
@@ -319,7 +340,7 @@ class KanonDashboardProvider {
                 }
                 #chat-send:hover { background-color: var(--vscode-button-hoverBackground); }
 
-                /* Workflow Toolbar (Optional, can be toggleable) */
+                /* Workflow Toolbar */
                 .toolbar {
                     padding: 5px 10px;
                     background-color: var(--vscode-editor-background);
@@ -354,14 +375,12 @@ class KanonDashboardProvider {
                 <div class="tab" data-target="qc">QC</div>
             </div>
 
-            <!-- Quick Actions Toolbar -->
+            <!-- Quick Actions Toolbar（Start/Stop Server ボタンは削除済み） -->
             <div class="toolbar">
                 <button class="tool-btn" id="btn-workflow-plan">Plan</button>
                 <button class="tool-btn" id="btn-workflow-execute">Execute</button>
                 <button class="tool-btn" id="btn-workflow-all" style="background:var(--vscode-button-background); color:white; font-weight:bold;">Run All</button>
                 <span class="toolbar-separator" style="margin: 0 5px; border-left: 1px solid var(--border-color);"></span>
-                <button class="tool-btn" id="btn-start">Start Server</button>
-                <button class="tool-btn" id="btn-stop">Stop Server</button>
                 <button class="tool-btn" id="btn-clear">Clear Logs</button>
                 <span style="flex-grow:1"></span>
                 <span style="font-size:0.8em; color:var(--vscode-descriptionForeground); align-self:center;">Project: Active</span>
@@ -399,43 +418,23 @@ class KanonDashboardProvider {
 
                 function getRoleInfo(agentName) {
                     const lower = agentName.toLowerCase();
-                    
-                    // Exact Role Matching
                     if (lower === 'conductor') return { role: 'conductor', class: 'agent-antigravity' };
                     if (lower === 'architect') return { role: 'architect', class: 'agent-gemini' };
                     if (lower === 'developer') return { role: 'developer', class: 'agent-opencode' };
                     if (lower === 'qc' || lower === 'gatekeeper') return { role: 'qc', class: 'agent-gatekeeper' };
-
-                    // System / Error / Legacy fallback
                     if (lower.includes('error')) return { role: 'all', class: 'agent-error' };
                     if (lower.includes('system')) return { role: 'all', class: 'agent-system' };
-                    
-                    // Default fallback
-                    return { role: 'conductor', class: 'agent-system' }; 
+                    return { role: 'conductor', class: 'agent-system' };
                 }
 
-                // --- Rendering ---
                 function renderLogs() {
                     logContainer.innerHTML = '';
-                    
                     const filtered = allLogs.filter(log => {
                         if (activeTab === 'all') return true;
-                        
-                        // Map agent to role
                         const info = getRoleInfo(log.agent);
-                        
-                        if (activeTab === 'architect' && info.role === 'architect') return true;
-                        if (activeTab === 'developer' && info.role === 'developer') return true;
-                        if (activeTab === 'qc' && info.role === 'qc') return true;
-                        if (activeTab === 'conductor' && info.role === 'conductor') return true;
-                        
-                        return false;
+                        return info.role === activeTab;
                     });
-
-                    filtered.forEach(log => {
-                        appendLogToDom(log, false); // Don't scroll yet
-                    });
-                    
+                    filtered.forEach(log => { appendLogToDom(log, false); });
                     logContainer.scrollTop = logContainer.scrollHeight;
                 }
 
@@ -456,192 +455,156 @@ class KanonDashboardProvider {
                     const info = getRoleInfo(log.agent);
                     const entry = document.createElement('div');
                     entry.className = 'log-entry ' + (info.class || '');
-                    
-                    // Status style
                     if (log.type === 'status') {
                         entry.style.backgroundColor = 'rgba(78, 201, 176, 0.1)';
                         entry.style.fontWeight = 'bold';
                         entry.style.borderLeftWidth = '5px';
                     }
-
                     const timeStr = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';
                     entry.innerHTML = '<span class="log-time">[' + timeStr + ']</span><span class="log-agent">' + log.agent + ':</span><span class="log-message">' + log.message + '</span>';
-
-                    // If error, force style
                     if (log.agent.toLowerCase().includes('error')) {
                         entry.style.borderLeftColor = '#F44336';
                         entry.style.backgroundColor = 'rgba(244, 67, 54, 0.1)';
                     }
-
                     logContainer.appendChild(entry);
                     if (autoScroll !== false) {
                         logContainer.scrollTop = logContainer.scrollHeight;
                     }
                 }
 
-// --- Chat Logic ---
-function sendMessage() {
-    if (!chatInput) return;
-    const text = chatInput.value.trim();
-    if (!text) return;
+                // --- Chat Logic ---
+                function sendMessage() {
+                    if (!chatInput) return;
+                    const text = chatInput.value.trim();
+                    if (!text) return;
+                    const now = new Date().toISOString();
+                    addLogData({ agent: 'User', message: text, timestamp: now });
+                    vscode.postMessage({ command: 'chat', text: text });
+                    chatInput.value = '';
+                }
 
-    // UIログにユーザー入力のエコーを追加
-    const now = new Date().toISOString();
-    const echoLog = { agent: 'User', message: text, timestamp: now };
-    addLogData(echoLog);
+                if (chatSend) chatSend.addEventListener('click', sendMessage);
+                if (chatInput) {
+                    chatInput.addEventListener('keypress', (e) => {
+                        if (e.key === 'Enter') sendMessage();
+                    });
+                }
 
-    // Run All ボタンと同じ動作を実行
-    vscode.postMessage({ command: 'chat', text: text });
-
-    chatInput.value = '';
-}
-
-if (chatSend) chatSend.addEventListener('click', sendMessage);
-if (chatInput) {
-    chatInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') sendMessage();
-    });
-}
-
-// --- Toolbar Actions ---
-const btnWorkflowPlan = document.getElementById('btn-workflow-plan');
-if (btnWorkflowPlan) {
-    btnWorkflowPlan.addEventListener('click', () => {
-        const task = chatInput ? chatInput.value.trim() : '';
-        if (!task) {
-            addLogData({ agent: 'error', message: 'Planを実行するには、タスクの内容(プロンプト)を入力してください。', timestamp: new Date().toISOString() });
-            if (chatInput) chatInput.focus();
-            return;
-        }
-        vscode.postMessage({ command: 'runWorkflow', workflow: 'plan', task: task });
-    });
-}
-
-const btnWorkflowExecute = document.getElementById('btn-workflow-execute');
-if (btnWorkflowExecute) {
-    btnWorkflowExecute.addEventListener('click', () => {
-        vscode.postMessage({ command: 'runWorkflow', workflow: 'execute' });
-    });
-}
-
-
-
-const btnWorkflowAll = document.getElementById('btn-workflow-all');
-if (btnWorkflowAll) {
-    btnWorkflowAll.addEventListener('click', () => {
-        const task = chatInput ? chatInput.value.trim() : '';
-        if (!task) {
-            addLogData({ agent: 'error', message: 'Run Allを実行するには、タスクの内容(プロンプト)を入力してください。', timestamp: new Date().toISOString() });
-            if (chatInput) chatInput.focus();
-            return;
-        }
-        vscode.postMessage({ command: 'runWorkflow', workflow: 'all', task: task });
-    });
-}
-
-const btnStart = document.getElementById('btn-start');
-if (btnStart) {
-    btnStart.addEventListener('click', () => { vscode.postMessage({ command: 'startServer' }); });
-}
-
-const btnStop = document.getElementById('btn-stop');
-if (btnStop) {
-    btnStop.addEventListener('click', () => { vscode.postMessage({ command: 'stopServer' }); });
-}
-
-const btnClear = document.getElementById('btn-clear');
-if (btnClear) {
-    btnClear.addEventListener('click', () => {
-        if (logContainer) logContainer.innerHTML = '';
-        allLogs = [];
-    });
-}
-
-// --- WebSocket ---
-let ws = null;
-let reconnectTimer = null;
-let reconnectAttempts = 0;
-
-function connect() {
-    if (ws !== null) return;
-
-    try {
-        ws = new WebSocket('ws://localhost:3001');
-
-        ws.onopen = () => {
-            updateStatus(true);
-            addLogData({ agent: 'system', message: 'Connected to Kanon Orchestrator', timestamp: new Date().toISOString() });
-            reconnectAttempts = 0;
-            if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
-        };
-
-        ws.onclose = () => {
-            updateStatus(false);
-            ws = null;
-            if (!reconnectTimer) { 
-                reconnectTimer = setInterval(() => {
-                    reconnectAttempts++;
-                    // 指数バックオフ的な簡易待ち
-                    if (reconnectAttempts > 30) { // 1.5分以上失敗し続けたら間隔を広げる
-                        clearInterval(reconnectTimer);
-                        reconnectTimer = setInterval(connect, 10000);
-                    }
-                    connect();
-                }, 3000); 
-            }
-        };
-
-        ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-
-                // Check if this is a special action message embedded in a log
-                if (data.message && typeof data.message === 'string' && data.message.includes('"action":"openChat"')) {
-                    try {
-                        const actionData = JSON.parse(data.message);
-                        if (actionData.type === 'action' && actionData.action === 'openChat') {
-                            vscode.postMessage({ command: 'openChat', text: actionData.text });
-                            addLogData({ agent: 'system', message: 'Triggered UI Chat Panel for final report.', timestamp: data.timestamp });
+                // --- Toolbar Actions ---
+                const btnWorkflowPlan = document.getElementById('btn-workflow-plan');
+                if (btnWorkflowPlan) {
+                    btnWorkflowPlan.addEventListener('click', () => {
+                        const task = chatInput ? chatInput.value.trim() : '';
+                        if (!task) {
+                            addLogData({ agent: 'error', message: 'Planを実行するには、タスクの内容(プロンプト)を入力してください。', timestamp: new Date().toISOString() });
+                            if (chatInput) chatInput.focus();
                             return;
                         }
+                        vscode.postMessage({ command: 'runWorkflow', workflow: 'plan', task: task });
+                    });
+                }
+
+                const btnWorkflowExecute = document.getElementById('btn-workflow-execute');
+                if (btnWorkflowExecute) {
+                    btnWorkflowExecute.addEventListener('click', () => {
+                        vscode.postMessage({ command: 'runWorkflow', workflow: 'execute' });
+                    });
+                }
+
+                const btnWorkflowAll = document.getElementById('btn-workflow-all');
+                if (btnWorkflowAll) {
+                    btnWorkflowAll.addEventListener('click', () => {
+                        const task = chatInput ? chatInput.value.trim() : '';
+                        if (!task) {
+                            addLogData({ agent: 'error', message: 'Run Allを実行するには、タスクの内容(プロンプト)を入力してください。', timestamp: new Date().toISOString() });
+                            if (chatInput) chatInput.focus();
+                            return;
+                        }
+                        vscode.postMessage({ command: 'runWorkflow', workflow: 'all', task: task });
+                    });
+                }
+
+                const btnClear = document.getElementById('btn-clear');
+                if (btnClear) {
+                    btnClear.addEventListener('click', () => {
+                        if (logContainer) logContainer.innerHTML = '';
+                        allLogs = [];
+                    });
+                }
+
+                // --- WebSocket ---
+                let ws = null;
+                let reconnectTimer = null;
+                let reconnectAttempts = 0;
+
+                function connect() {
+                    if (ws !== null) return;
+                    try {
+                        ws = new WebSocket('ws://localhost:3001');
+                        ws.onopen = () => {
+                            updateStatus(true);
+                            addLogData({ agent: 'system', message: 'Kanon Orchestrator に接続しました', timestamp: new Date().toISOString() });
+                            reconnectAttempts = 0;
+                            if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
+                        };
+                        ws.onclose = () => {
+                            updateStatus(false);
+                            ws = null;
+                            if (!reconnectTimer) {
+                                reconnectTimer = setInterval(() => {
+                                    reconnectAttempts++;
+                                    if (reconnectAttempts > 30) {
+                                        clearInterval(reconnectTimer);
+                                        reconnectTimer = setInterval(connect, 10000);
+                                    }
+                                    connect();
+                                }, 3000);
+                            }
+                        };
+                        ws.onmessage = (event) => {
+                            try {
+                                const data = JSON.parse(event.data);
+                                if (data.message && typeof data.message === 'string' && data.message.includes('"action":"openChat"')) {
+                                    try {
+                                        const actionData = JSON.parse(data.message);
+                                        if (actionData.type === 'action' && actionData.action === 'openChat') {
+                                            vscode.postMessage({ command: 'openChat', text: actionData.text });
+                                            addLogData({ agent: 'system', message: 'Triggered UI Chat Panel for final report.', timestamp: data.timestamp });
+                                            return;
+                                        }
+                                    } catch (e) { /* 非アクションメッセージのパースエラーは無視 */ }
+                                }
+                                addLogData(data);
+                            } catch (e) {
+                                console.error('WS parse error', e, event.data);
+                            }
+                        };
+                        ws.onerror = (err) => {
+                            console.error('WebSocket Error', err);
+                        };
                     } catch (e) {
-                        // Ignore parse error for non-action messages
+                        console.error('WebSocket init failed', e);
                     }
                 }
 
-                addLogData(data);
-            } catch (e) {
-                console.error('WS parse error', e, event.data);
-            }
-        };
+                function updateStatus(connected) {
+                    if (statusEl) {
+                        if (connected) {
+                            statusEl.textContent = 'Connected';
+                            statusEl.className = 'status-badge status-connected';
+                        } else {
+                            statusEl.textContent = 'Disconnected';
+                            statusEl.className = 'status-badge status-disconnected';
+                        }
+                    }
+                }
 
-        ws.onerror = (err) => {
-            // Error itself doesn't provide much info in browser WS, onclose will handle reconnect
-            console.error('WebSocket Error', err);
-        };
-    } catch (e) {
-        console.error('WebSocket init failed', e);
-    }
-}
+                addLogData({ agent: 'system', message: 'ダッシュボードを初期化しました。', timestamp: new Date().toISOString() });
+                connect();
 
-function updateStatus(connected) {
-    if (statusEl) {
-        if (connected) {
-            statusEl.textContent = 'Connected';
-            statusEl.className = 'status-badge status-connected';
-        } else {
-            statusEl.textContent = 'Disconnected';
-            statusEl.className = 'status-badge status-disconnected';
-        }
-    }
-}
-
-addLogData({ agent: 'system', message: 'Dashboard initialized.', timestamp: new Date().toISOString() });
-connect();
-
-</script>
-    </body>
-    </html>
+            </script>
+        </body>
+        </html>
         `;
     }
 }
