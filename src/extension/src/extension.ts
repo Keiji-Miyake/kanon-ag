@@ -1,17 +1,261 @@
 import * as vscode from 'vscode';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer } from 'http';
+import * as fs from 'fs';
+import * as path from 'path';
+import chokidar from 'chokidar';
 
 let taskTerminal: vscode.Terminal | undefined;
 let wss: WebSocketServer | undefined;
 let wsHttpServer: ReturnType<typeof createServer> | undefined;
+let fileWatcher: ReturnType<typeof chokidar.watch> | undefined;
 const WS_PORT = 3001;
 
-export function activate(context: vscode.ExtensionContext) {
-    console.log('Kanon Extension v0.1.0 Activated (Embedded WS Server)!');
+// =============================================================================
+// 状態管理：エージェントの実行状態を表すデータ型
+// =============================================================================
 
-    // 拡張機能起動時に WebSocket サーバーを自動起動
+interface AgentStatus {
+    name: string;
+    status: 'idle' | 'running' | 'done' | 'error';
+    lastMessage?: string;
+    startedAt?: string;
+    finishedAt?: string;
+}
+
+interface ActivityEntry {
+    timestamp: string;
+    agent: string;
+    message: string;
+    type?: 'log' | 'status' | 'error';
+}
+
+interface KanonState {
+    sessionId?: string;
+    task?: string;
+    overallStatus: 'idle' | 'running' | 'done' | 'error';
+    startedAt?: string;
+    finishedAt?: string;
+    agents: AgentStatus[];
+    activities: ActivityEntry[];
+    lastUpdated: string;
+}
+
+let currentState: KanonState = {
+    overallStatus: 'idle',
+    agents: [
+        { name: 'Conductor', status: 'idle' },
+        { name: 'Architect', status: 'idle' },
+        { name: 'Developer', status: 'idle' },
+        { name: 'QC', status: 'idle' },
+    ],
+    activities: [],
+    lastUpdated: new Date().toISOString(),
+};
+
+// =============================================================================
+// .memories/ ファイルパース処理
+// =============================================================================
+
+/**
+ * .memories/ ディレクトリ配下のファイルを読み取り KanonState を構築する。
+ * session.md, task-board.md, progress/*.md を対象とする。
+ */
+function parseMemoriesToState(memoriesDir: string): Partial<KanonState> {
+    const updates: Partial<KanonState> = {};
+
+    try {
+        // session.md の読み込み
+        const sessionPath = path.join(memoriesDir, 'session.md');
+        if (fs.existsSync(sessionPath)) {
+            const content = fs.readFileSync(sessionPath, 'utf-8');
+            // セッションIDを "# Session: xxx" or "sessionId: xxx" 形式でパース
+            const sessionIdMatch = content.match(/(?:# Session:|sessionId:)\s*(.+)/i);
+            if (sessionIdMatch) {
+                updates.sessionId = sessionIdMatch[1].trim();
+            }
+            // タスク名をパース
+            const taskMatch = content.match(/(?:task:|## Task:|タスク:)\s*(.+)/i);
+            if (taskMatch) {
+                updates.task = taskMatch[1].trim();
+            }
+            // 開始時刻をパース
+            const startedMatch = content.match(/(?:startedAt:|started:|開始:|## Started:)\s*(.+)/i);
+            if (startedMatch) {
+                updates.startedAt = startedMatch[1].trim();
+            }
+            // 状態をパース
+            const statusMatch = content.match(/(?:status:|## Status:|状態:)\s*(.+)/i);
+            if (statusMatch) {
+                const rawStatus = statusMatch[1].trim().toLowerCase();
+                if (rawStatus.includes('run') || rawStatus.includes('実行')) {
+                    updates.overallStatus = 'running';
+                } else if (rawStatus.includes('done') || rawStatus.includes('完了')) {
+                    updates.overallStatus = 'done';
+                } else if (rawStatus.includes('error') || rawStatus.includes('エラー')) {
+                    updates.overallStatus = 'error';
+                } else {
+                    updates.overallStatus = 'idle';
+                }
+            }
+        }
+
+        // task-board.md の読み込み
+        const taskBoardPath = path.join(memoriesDir, 'task-board.md');
+        if (fs.existsSync(taskBoardPath)) {
+            const content = fs.readFileSync(taskBoardPath, 'utf-8');
+            if (!updates.task) {
+                const taskMatch = content.match(/(?:# Task:|## Current Task:|タスク:)\s*(.+)/i);
+                if (taskMatch) {
+                    updates.task = taskMatch[1].trim();
+                }
+            }
+        }
+
+        // progress/*.md の読み込み（エージェントステータスの更新）
+        const progressDir = path.join(memoriesDir, 'progress');
+        if (fs.existsSync(progressDir)) {
+            const agents: AgentStatus[] = [...currentState.agents];
+
+            const files = fs.readdirSync(progressDir).filter(f => f.endsWith('.md'));
+            for (const file of files) {
+                const filePath = path.join(progressDir, file);
+                const content = fs.readFileSync(filePath, 'utf-8');
+
+                // ファイル名からエージェント名を推定
+                const agentNameMatch = file.match(/^(\w+)/);
+                const agentName = agentNameMatch ? agentNameMatch[1] : file.replace('.md', '');
+
+                // ステータスをパース
+                const statusMatch = content.match(/(?:status:|## Status:|状態:)\s*(.+)/i);
+                let agentStatus: AgentStatus['status'] = 'idle';
+                if (statusMatch) {
+                    const raw = statusMatch[1].trim().toLowerCase();
+                    if (raw.includes('run') || raw.includes('実行')) agentStatus = 'running';
+                    else if (raw.includes('done') || raw.includes('完了')) agentStatus = 'done';
+                    else if (raw.includes('error') || raw.includes('エラー')) agentStatus = 'error';
+                }
+
+                // 最終メッセージをパース
+                const lines = content.split('\n').filter(l => l.trim());
+                const lastMessage = lines[lines.length - 1];
+
+                // 既存エージェントを更新、なければ追加
+                const existingIdx = agents.findIndex(a =>
+                    a.name.toLowerCase() === agentName.toLowerCase());
+                if (existingIdx >= 0) {
+                    agents[existingIdx] = { ...agents[existingIdx], status: agentStatus, lastMessage };
+                } else {
+                    agents.push({ name: agentName, status: agentStatus, lastMessage });
+                }
+            }
+            updates.agents = agents;
+        }
+
+    } catch (err) {
+        console.error('[Kanon] .memories/ パースエラー:', err);
+    }
+
+    return updates;
+}
+
+/**
+ * 現在のワークスペースの .memories/ を監視・解析して状態を更新し、
+ * 全接続クライアントにブロードキャストする。
+ */
+function broadcastState() {
+    const stateMsg = JSON.stringify({
+        type: 'state',
+        state: currentState,
+        timestamp: new Date().toISOString(),
+    });
+
+    if (wss) {
+        wss.clients.forEach(client => {
+            if (client.readyState === WebSocket.OPEN) {
+                client.send(stateMsg);
+            }
+        });
+    }
+}
+
+/**
+ * ワークスペースの .memories/ ディレクトリを chokidar で監視し、
+ * 変更があるたびに状態を更新してブロードキャストする。
+ */
+function startFileWatcher(workspaceRoot: string) {
+    const memoriesDir = path.join(workspaceRoot, '.memories');
+
+    // 監視ディレクトリが存在しない場合は作成しておく
+    if (!fs.existsSync(memoriesDir)) {
+        fs.mkdirSync(memoriesDir, { recursive: true });
+    }
+
+    // 初期状態をロード
+    const initialUpdates = parseMemoriesToState(memoriesDir);
+    currentState = { ...currentState, ...initialUpdates, lastUpdated: new Date().toISOString() };
+
+    if (fileWatcher) {
+        fileWatcher.close();
+    }
+
+    fileWatcher = chokidar.watch(memoriesDir, {
+        ignoreInitial: false,
+        persistent: true,
+        depth: 3,
+        awaitWriteFinish: {
+            stabilityThreshold: 300,
+            pollInterval: 100,
+        },
+    });
+
+    const onFileChange = (_filePath: string) => {
+        const updates = parseMemoriesToState(memoriesDir);
+        currentState = { ...currentState, ...updates, lastUpdated: new Date().toISOString() };
+        broadcastState();
+    };
+
+    fileWatcher
+        .on('add', onFileChange)
+        .on('change', onFileChange)
+        .on('unlink', onFileChange)
+        .on('error', (err) => console.error('[Kanon] chokidar エラー:', err));
+
+    console.log(`[Kanon] .memories/ 監視開始: ${memoriesDir}`);
+}
+
+function stopFileWatcher() {
+    if (fileWatcher) {
+        fileWatcher.close();
+        fileWatcher = undefined;
+    }
+}
+
+// =============================================================================
+// 拡張機能内蔵 WebSocket サーバー
+// =============================================================================
+
+export function activate(context: vscode.ExtensionContext) {
+    console.log('Kanon Extension v0.2.0 Activated (State Sync + File Watch)!');
+
+    // 拡張機能起動時に WebSocket サーバーとファイル監視を自動起動
     startEmbeddedServer();
+
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (workspaceRoot) {
+        startFileWatcher(workspaceRoot);
+    }
+
+    // ワークスペースフォルダが変わったときも再起動
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeWorkspaceFolders(() => {
+            stopFileWatcher();
+            const newRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            if (newRoot) {
+                startFileWatcher(newRoot);
+            }
+        })
+    );
 
     const provider = new KanonDashboardProvider(context.extensionUri);
 
@@ -23,7 +267,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('kanon.hello', () => {
-            vscode.window.showInformationMessage('Hello from Kanon Extension (v0.1.0)!');
+            vscode.window.showInformationMessage('Hello from Kanon Extension (v0.2.0)!');
         }));
 
     context.subscriptions.push(
@@ -37,16 +281,13 @@ export function deactivate() {
         taskTerminal.dispose();
     }
     stopEmbeddedServer();
+    stopFileWatcher();
 }
-
-// =============================================================================
-// 拡張機能内蔵 WebSocket サーバー
-// =============================================================================
 
 /**
  * 拡張機能内で WebSocket サーバーを起動する。
  * CLIツール (kanon run, kanon execute 等) からのログを中継してダッシュボードUIへ流す。
- * これにより、別途 `kanon ui` プロセスを手動で起動する必要がなくなる。
+ * また、ファイル監視による状態更新もこのサーバー経由でブロードキャストされる。
  */
 function startEmbeddedServer() {
     if (wss) return; // 既に起動済み
@@ -56,7 +297,7 @@ function startEmbeddedServer() {
 
     wsHttpServer.on('error', (err: any) => {
         if (err.code === 'EADDRINUSE') {
-            console.log(`[Kanon] WebSocket ポート ${WS_PORT} は既に使用中です。既存のサーバーに接続します。`);
+            console.log(`[Kanon] WebSocket ポート ${WS_PORT} は既に使用中です。`);
         } else {
             console.error('[Kanon] WebSocket サーバーエラー:', err);
         }
@@ -75,6 +316,13 @@ function startEmbeddedServer() {
     wss.on('connection', (ws: WebSocket) => {
         console.log('[Kanon] クライアント接続');
 
+        // 接続直後に現在の状態全体をクライアントに送信（状態復元）
+        ws.send(JSON.stringify({
+            type: 'state',
+            state: currentState,
+            timestamp: new Date().toISOString(),
+        }));
+
         ws.on('close', () => {
             console.log('[Kanon] クライアント切断');
         });
@@ -82,19 +330,47 @@ function startEmbeddedServer() {
         ws.on('message', (message) => {
             const data = message.toString();
             // CLI からのログを全接続クライアント（ダッシュボード UI）にブロードキャスト
+            // また、ログメッセージを activities に追記してステート更新もする
+            try {
+                const parsed = JSON.parse(data);
+                // 既存の text ログ互換処理を維持
+                if (parsed.agent && parsed.message) {
+                    const activity: ActivityEntry = {
+                        timestamp: parsed.timestamp || new Date().toISOString(),
+                        agent: parsed.agent,
+                        message: parsed.message,
+                        type: parsed.type || 'log',
+                    };
+                    currentState.activities = [...currentState.activities.slice(-99), activity];
+                    currentState.lastUpdated = new Date().toISOString();
+
+                    // エージェントステータス更新（statusタイプのメッセージの場合）
+                    if (parsed.type === 'status') {
+                        const agentIdx = currentState.agents.findIndex(
+                            a => a.name.toLowerCase() === parsed.agent.toLowerCase()
+                        );
+                        if (agentIdx >= 0) {
+                            currentState.agents[agentIdx].lastMessage = parsed.message;
+                            if (parsed.message.includes('完了') || parsed.message.includes('done')) {
+                                currentState.agents[agentIdx].status = 'done';
+                            } else if (parsed.message.includes('開始') || parsed.message.includes('start')) {
+                                currentState.agents[agentIdx].status = 'running';
+                            }
+                        }
+                    }
+                }
+            } catch (_e) {
+                // JSON でない場合は無視
+            }
+
             wss!.clients.forEach(client => {
                 if (client !== ws && client.readyState === WebSocket.OPEN) {
                     client.send(data);
                 }
             });
+            // 更新された状態をブロードキャスト
+            broadcastState();
         });
-
-        // 接続時のウェルカムメッセージ
-        ws.send(JSON.stringify({
-            timestamp: new Date().toISOString(),
-            agent: 'system',
-            message: 'Kanon Orchestrator に接続しました'
-        }));
     });
 }
 
@@ -142,7 +418,6 @@ class KanonDashboardProvider {
                     this.runWorkflow(data.workflow, data.task);
                     break;
                 case 'chat':
-                    // チャット送信をユーザーの利便性のために直接 runWorkflow('all') にマッピング
                     vscode.window.showInformationMessage('Kanon: チャット入力からオーケストレーションを開始します...');
                     this.runWorkflow('all', data.text);
                     break;
@@ -191,7 +466,6 @@ class KanonDashboardProvider {
     }
 
     public runWorkflow(workflow: string, task: string) {
-        // 実行用のターミナルを作成 または 再利用
         if (!taskTerminal || taskTerminal.exitStatus) {
             const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
             taskTerminal = vscode.window.createTerminal({
@@ -227,7 +501,7 @@ class KanonDashboardProvider {
         const nonce = getNonce();
 
         return `<!DOCTYPE html>
-        <html lang="en">
+        <html lang="ja">
         <head>
             <meta charset="UTF-8">
             <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' var(--vscode-font-family); script-src 'nonce-${nonce}'; connect-src ws://localhost:3001;">
@@ -237,44 +511,87 @@ class KanonDashboardProvider {
                 :root {
                     --bg-color: var(--vscode-editor-background);
                     --text-color: var(--vscode-editor-foreground);
-                    --border-color: var(--vscode-widget-border);
-                    --accent-color: var(--vscode-activityBarBadge-background);
-                    --accent-fg: var(--vscode-activityBarBadge-foreground);
+                    --border-color: var(--vscode-widget-border, #444);
+                    --accent-color: var(--vscode-activityBarBadge-background, #007acc);
+                    --accent-fg: var(--vscode-activityBarBadge-foreground, #fff);
+                    --desc-color: var(--vscode-descriptionForeground, #888);
+                    --success-color: #4CAF50;
+                    --error-color: #F44336;
+                    --warn-color: #FF9800;
+                    --running-color: #2196F3;
                 }
+                * { box-sizing: border-box; }
                 body {
                     font-family: var(--vscode-font-family);
                     padding: 0; margin: 0;
                     color: var(--text-color);
                     background-color: var(--bg-color);
                     display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+                    font-size: 13px;
                 }
-                
-                /* Header */
+
+                /* ==============================
+                   Header / セッション情報
+                ============================== */
                 .header {
-                    padding: 10px 15px;
+                    padding: 8px 12px 6px;
                     border-bottom: 1px solid var(--border-color);
-                    display: flex; justify-content: space-between; align-items: center;
                     background-color: var(--vscode-editor-inactiveSelectionBackground);
                     flex-shrink: 0;
                 }
-                .header h3 { margin: 0; font-size: 1.1em; }
-                .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold; }
-                .status-connected { background-color: #4CAF50; color: white; }
-                .status-disconnected { background-color: #F44336; color: white; }
+                .header-top {
+                    display: flex; justify-content: space-between; align-items: center;
+                    margin-bottom: 4px;
+                }
+                .header h3 { margin: 0; font-size: 1em; letter-spacing: 0.05em; }
+                .status-badge {
+                    padding: 2px 8px; border-radius: 10px;
+                    font-size: 0.75em; font-weight: bold;
+                    display: flex; align-items: center; gap: 4px;
+                }
+                .status-connected { background-color: var(--success-color); color: white; }
+                .status-disconnected { background-color: var(--error-color); color: white; }
+                .status-reconnecting { background-color: var(--warn-color); color: white; }
 
-                /* Tabs */
+                /* Session info */
+                .session-info {
+                    font-size: 0.75em;
+                    color: var(--desc-color);
+                    display: flex; flex-direction: column; gap: 1px;
+                }
+                .session-task {
+                    font-size: 0.8em;
+                    color: var(--text-color);
+                    font-weight: 600;
+                    margin-top: 2px;
+                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+                }
+                .overall-status-badge {
+                    display: inline-flex; align-items: center; gap: 4px;
+                    padding: 1px 6px; border-radius: 10px; font-size: 0.7em; font-weight: bold;
+                    margin-left: 6px;
+                }
+                .overall-idle { background: var(--border-color); color: var(--desc-color); }
+                .overall-running { background: var(--running-color); color: white; }
+                .overall-done { background: var(--success-color); color: white; }
+                .overall-error { background: var(--error-color); color: white; }
+
+                /* ==============================
+                   Tabs
+                ============================== */
                 .tabs {
                     display: flex;
                     border-bottom: 1px solid var(--border-color);
-                    background-color: var(--vscode-editor-background);
+                    background-color: var(--bg-color);
                     flex-shrink: 0;
                 }
                 .tab {
-                    padding: 10px 15px;
+                    padding: 6px 12px;
                     cursor: pointer;
-                    opacity: 0.7;
+                    opacity: 0.6;
                     border-bottom: 2px solid transparent;
-                    font-weight: 500;
+                    font-size: 0.85em; font-weight: 500;
+                    transition: all 0.15s ease;
                 }
                 .tab:hover { opacity: 1; background-color: var(--vscode-list-hoverBackground); }
                 .tab.active {
@@ -283,196 +600,416 @@ class KanonDashboardProvider {
                     color: var(--vscode-textLink-foreground);
                 }
 
-                /* Log Area */
-                #log-container {
-                    flex-grow: 1;
-                    overflow-y: auto;
-                    padding: 15px;
+                /* ==============================
+                   エージェント ステータス表
+                ============================== */
+                #panel-state {
+                    display: flex; flex-direction: column; flex: 1; overflow: hidden;
+                }
+                .agent-table {
+                    padding: 8px 12px 4px;
+                    border-bottom: 1px solid var(--border-color);
+                    flex-shrink: 0;
+                }
+                .agent-table-title {
+                    font-size: 0.7em; text-transform: uppercase; letter-spacing: 0.08em;
+                    color: var(--desc-color); margin-bottom: 4px;
+                }
+                .agent-rows { display: flex; flex-direction: column; gap: 2px; }
+                .agent-row {
+                    display: flex; align-items: center; gap: 8px;
+                    padding: 3px 6px; border-radius: 4px;
+                    transition: background 0.15s;
+                    font-size: 0.85em;
+                }
+                .agent-row:hover { background: var(--vscode-list-hoverBackground); }
+                .agent-dot {
+                    width: 8px; height: 8px; border-radius: 50%;
+                    flex-shrink: 0; transition: background 0.3s;
+                }
+                .dot-idle { background: var(--border-color); }
+                .dot-running {
+                    background: var(--running-color);
+                    box-shadow: 0 0 0 2px rgba(33,150,243,0.3);
+                    animation: pulse 1.5s infinite;
+                }
+                .dot-done { background: var(--success-color); }
+                .dot-error { background: var(--error-color); }
+                @keyframes pulse {
+                    0%,100% { box-shadow: 0 0 0 2px rgba(33,150,243,0.3); }
+                    50% { box-shadow: 0 0 0 5px rgba(33,150,243,0.1); }
+                }
+                .agent-name { font-weight: 600; min-width: 75px; }
+                .agent-status-label {
+                    font-size: 0.75em; padding: 1px 6px; border-radius: 8px;
+                    background: var(--border-color); color: var(--desc-color);
+                }
+                .label-running { background: var(--running-color); color: white; }
+                .label-done { background: var(--success-color); color: white; }
+                .label-error { background: var(--error-color); color: white; }
+                .agent-msg {
+                    flex: 1; color: var(--desc-color); font-size: 0.8em;
+                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+                }
+
+                /* ==============================
+                   アクティビティ一覧
+                ============================== */
+                #activity-list {
+                    flex: 1; overflow-y: auto; padding: 8px 12px;
                     font-family: 'Courier New', Courier, monospace;
-                    font-size: 0.9em;
-                    background-color: var(--vscode-editor-background);
+                    font-size: 0.82em;
+                }
+                .activity-section-title {
+                    font-size: 0.65em; text-transform: uppercase; letter-spacing: 0.08em;
+                    color: var(--desc-color); margin-bottom: 4px; font-family: var(--vscode-font-family);
+                }
+                .activity-entry {
+                    display: flex; gap: 6px; align-items: flex-start;
+                    margin-bottom: 4px; padding: 3px 5px;
+                    border-radius: 3px; border-left: 3px solid transparent;
+                    animation: fadeIn 0.25s ease;
+                }
+                @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+                .act-time { color: var(--desc-color); white-space: nowrap; flex-shrink: 0; }
+                .act-agent { font-weight: bold; min-width: 72px; flex-shrink: 0; }
+                .act-msg { white-space: pre-wrap; word-wrap: break-word; flex: 1; }
+
+                /* エージェント別左ボーダー色 */
+                .agent-conductor { border-left-color: #569CD6; }
+                .agent-architect { border-left-color: #C586C0; }
+                .agent-developer { border-left-color: #CE9178; }
+                .agent-qc, .agent-gatekeeper { border-left-color: #DCDCAA; }
+                .agent-system { border-left-color: #666; }
+                .agent-error-entry {
+                    border-left-color: var(--error-color);
+                    background: rgba(244,67,54,0.08);
+                }
+                .activity-entry.type-status {
+                    background: rgba(78,201,176,0.08);
+                    border-left-width: 4px;
+                    font-weight: 600;
+                }
+
+                /* ==============================
+                   ログ エリア（従来互換、Logsタブ用）
+                ============================== */
+                #panel-logs {
+                    display: none; flex: 1; flex-direction: column; overflow: hidden;
+                }
+                #log-container {
+                    flex: 1; overflow-y: auto; padding: 10px 12px;
+                    font-family: 'Courier New', Courier, monospace;
+                    font-size: 0.82em;
                 }
                 .log-entry {
-                    margin-bottom: 8px;
-                    padding: 5px;
-                    border-radius: 4px;
-                    border-left: 3px solid transparent;
-                    animation: fadeIn 0.3s ease;
+                    margin-bottom: 6px; padding: 4px 5px;
+                    border-radius: 3px; border-left: 3px solid transparent;
+                    animation: fadeIn 0.25s ease;
                 }
-                @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
-                
-                .log-time { color: var(--vscode-descriptionForeground); font-size: 0.8em; margin-right: 8px; }
-                .log-agent { font-weight: bold; margin-right: 8px; display: inline-block; min-width: 80px; }
+                .log-time { color: var(--desc-color); font-size: 0.8em; margin-right: 6px; }
+                .log-agent { font-weight: bold; margin-right: 6px; display: inline-block; min-width: 75px; }
                 .log-message { white-space: pre-wrap; word-wrap: break-word; }
 
-                /* Agent Colors */
-                .agent-system { border-left-color: #888; color: #aaa; }
-                .agent-antigravity { border-left-color: #569CD6; }
-                .agent-kanon { border-left-color: #4EC9B0; }
-                .agent-gemini { border-left-color: #C586C0; }
-                .agent-opencode { border-left-color: #CE9178; }
-                .agent-gatekeeper { border-left-color: #DCDCAA; }
-                .agent-error { border-left-color: #F44336; background-color: rgba(244, 67, 54, 0.1); }
-
-                /* Chat Area */
-                .chat-area {
-                    padding: 10px;
-                    border-top: 1px solid var(--border-color);
-                    background-color: var(--vscode-editor-inactiveSelectionBackground);
-                    flex-shrink: 0;
-                    display: flex; gap: 10px;
-                }
-                #chat-input {
-                    flex-grow: 1;
-                    padding: 8px;
-                    border: 1px solid var(--vscode-input-border);
-                    background-color: var(--vscode-input-background);
-                    color: var(--vscode-input-foreground);
-                    border-radius: 4px;
-                }
-                #chat-send {
-                    padding: 8px 16px;
-                    background-color: var(--vscode-button-background);
-                    color: var(--vscode-button-foreground);
-                    border: none;
-                    border-radius: 4px;
-                    cursor: pointer;
-                }
-                #chat-send:hover { background-color: var(--vscode-button-hoverBackground); }
-
-                /* Workflow Toolbar */
+                /* ==============================
+                   Toolbar & チャット
+                ============================== */
                 .toolbar {
-                    padding: 5px 10px;
-                    background-color: var(--vscode-editor-background);
+                    padding: 4px 8px;
+                    background: var(--bg-color);
                     border-bottom: 1px solid var(--border-color);
-                    display: flex; gap: 5px; overflow-x: auto;
-                    flex-shrink: 0;
+                    display: flex; gap: 4px; overflow-x: auto;
+                    flex-shrink: 0; align-items: center;
                 }
                 .tool-btn {
-                    font-size: 0.8em;
-                    padding: 2px 8px;
+                    font-size: 0.78em; padding: 2px 8px;
                     background: transparent;
                     border: 1px solid var(--border-color);
                     color: var(--text-color);
-                    cursor: pointer;
-                    border-radius: 10px;
+                    cursor: pointer; border-radius: 10px;
+                    white-space: nowrap;
+                    transition: background 0.15s;
                 }
-                .tool-btn:hover { background-color: var(--vscode-toolbar-hoverBackground); }
+                .tool-btn:hover { background: var(--vscode-toolbar-hoverBackground); }
+                .tool-btn-primary {
+                    background: var(--accent-color); color: var(--accent-fg);
+                    border-color: var(--accent-color); font-weight: bold;
+                }
+                .tool-btn-primary:hover { opacity: 0.85; }
+
+                .updated-at {
+                    flex-grow: 1; text-align: right;
+                    font-size: 0.7em; color: var(--desc-color);
+                }
+
+                .chat-area {
+                    padding: 8px;
+                    border-top: 1px solid var(--border-color);
+                    background: var(--vscode-editor-inactiveSelectionBackground);
+                    flex-shrink: 0;
+                    display: flex; gap: 6px;
+                }
+                #chat-input {
+                    flex-grow: 1; padding: 6px 8px;
+                    border: 1px solid var(--vscode-input-border);
+                    background: var(--vscode-input-background);
+                    color: var(--vscode-input-foreground);
+                    border-radius: 4px; font-size: 0.88em;
+                }
+                #chat-send {
+                    padding: 6px 14px;
+                    background: var(--vscode-button-background);
+                    color: var(--vscode-button-foreground);
+                    border: none; border-radius: 4px;
+                    cursor: pointer; font-size: 0.88em;
+                    transition: background 0.15s;
+                }
+                #chat-send:hover { background: var(--vscode-button-hoverBackground); }
+
+                /* scrollbar */
+                ::-webkit-scrollbar { width: 6px; }
+                ::-webkit-scrollbar-track { background: transparent; }
+                ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
 
             </style>
         </head>
         <body>
+            <!-- ヘッダー：セッション情報 -->
             <div class="header">
-                <h3>Kanon Dashboard</h3>
-                <span id="status" class="status-badge status-disconnected">Disconnected</span>
+                <div class="header-top">
+                    <h3>⚡ Kanon Dashboard</h3>
+                    <span id="status" class="status-badge status-disconnected">Disconnected</span>
+                </div>
+                <div class="session-info">
+                    <div>
+                        <span id="session-id-label">セッション: --</span>
+                        <span id="overall-status-badge" class="overall-status-badge overall-idle">idle</span>
+                    </div>
+                    <div id="session-task" class="session-task" title="">タスクなし</div>
+                </div>
             </div>
 
+            <!-- タブ -->
             <div class="tabs">
-                <div class="tab active" data-target="all">All</div>
-                <div class="tab" data-target="conductor">Conductor</div>
-                <div class="tab" data-target="architect">Architect</div>
-                <div class="tab" data-target="developer">Developer</div>
-                <div class="tab" data-target="qc">QC</div>
+                <div class="tab active" data-target="state">状態</div>
+                <div class="tab" data-target="logs">ログ</div>
             </div>
 
-            <!-- Quick Actions Toolbar（Start/Stop Server ボタンは削除済み） -->
+            <!-- Toolbar -->
             <div class="toolbar">
-                <button class="tool-btn" id="btn-workflow-plan">Plan</button>
-                <button class="tool-btn" id="btn-workflow-execute">Execute</button>
-                <button class="tool-btn" id="btn-workflow-all" style="background:var(--vscode-button-background); color:white; font-weight:bold;">Run All</button>
-                <span class="toolbar-separator" style="margin: 0 5px; border-left: 1px solid var(--border-color);"></span>
-                <button class="tool-btn" id="btn-clear">Clear Logs</button>
-                <span style="flex-grow:1"></span>
-                <span style="font-size:0.8em; color:var(--vscode-descriptionForeground); align-self:center;">Project: Active</span>
+                <button class="tool-btn" id="btn-workflow-plan">📋 Plan</button>
+                <button class="tool-btn" id="btn-workflow-execute">▶ Execute</button>
+                <button class="tool-btn tool-btn-primary" id="btn-workflow-all">🚀 Run All</button>
+                <button class="tool-btn" id="btn-clear">🗑 クリア</button>
+                <span class="updated-at" id="updated-at"></span>
             </div>
 
-            <div id="log-container">
-                <!-- Logs go here -->
+            <!-- パネル: 状態（State） -->
+            <div id="panel-state">
+                <!-- エージェント ステータス表 -->
+                <div class="agent-table">
+                    <div class="agent-table-title">エージェント ステータス</div>
+                    <div class="agent-rows" id="agent-rows">
+                        <!-- JS で動的生成 -->
+                    </div>
+                </div>
+                <!-- 最新アクティビティ -->
+                <div id="activity-list">
+                    <div class="activity-section-title">最新アクティビティ</div>
+                    <div id="activity-entries"><!-- JS で動的生成 --></div>
+                </div>
             </div>
 
+            <!-- パネル: ログ（従来互換） -->
+            <div id="panel-logs">
+                <div id="log-container"></div>
+            </div>
+
+            <!-- チャット入力 -->
             <div class="chat-area">
-                <input type="text" id="chat-input" placeholder="タスクの内容を入力してRun PlanまたはSendを押してください...">
+                <input type="text" id="chat-input" placeholder="タスクの内容を入力して Run All または Send…">
                 <button id="chat-send">Send</button>
             </div>
 
             <script nonce="${nonce}">
                 const vscode = acquireVsCodeApi();
+
+                // ===== DOM参照 =====
                 const statusEl = document.getElementById('status');
                 const logContainer = document.getElementById('log-container');
                 const chatInput = document.getElementById('chat-input');
                 const chatSend = document.getElementById('chat-send');
                 const tabs = document.querySelectorAll('.tab');
+                const panelState = document.getElementById('panel-state');
+                const panelLogs = document.getElementById('panel-logs');
+                const agentRowsEl = document.getElementById('agent-rows');
+                const activityEntriesEl = document.getElementById('activity-entries');
+                const sessionIdLabel = document.getElementById('session-id-label');
+                const sessionTaskEl = document.getElementById('session-task');
+                const overallStatusBadge = document.getElementById('overall-status-badge');
+                const updatedAtEl = document.getElementById('updated-at');
 
                 let allLogs = [];
-                let activeTab = 'all';
+                let activeTab = 'state';
+                // 現在のレンダリング済み状態（差分更新用）
+                let renderedActivityCount = 0;
 
-                // --- Tab Logic ---
+                // ===== タブ切り替え =====
                 tabs.forEach(tab => {
                     tab.addEventListener('click', () => {
                         tabs.forEach(t => t.classList.remove('active'));
                         tab.classList.add('active');
                         activeTab = tab.dataset.target;
-                        renderLogs();
+                        if (activeTab === 'state') {
+                            panelState.style.display = 'flex';
+                            panelLogs.style.display = 'none';
+                        } else {
+                            panelState.style.display = 'none';
+                            panelLogs.style.display = 'flex';
+                        }
                     });
                 });
 
-                function getRoleInfo(agentName) {
-                    const lower = agentName.toLowerCase();
-                    if (lower === 'conductor') return { role: 'conductor', class: 'agent-antigravity' };
-                    if (lower === 'architect') return { role: 'architect', class: 'agent-gemini' };
-                    if (lower === 'developer') return { role: 'developer', class: 'agent-opencode' };
-                    if (lower === 'qc' || lower === 'gatekeeper') return { role: 'qc', class: 'agent-gatekeeper' };
-                    if (lower.includes('error')) return { role: 'all', class: 'agent-error' };
-                    if (lower.includes('system')) return { role: 'all', class: 'agent-system' };
-                    return { role: 'conductor', class: 'agent-system' };
-                }
+                // ===== 状態レンダリング =====
 
-                function renderLogs() {
-                    logContainer.innerHTML = '';
-                    const filtered = allLogs.filter(log => {
-                        if (activeTab === 'all') return true;
-                        const info = getRoleInfo(log.agent);
-                        return info.role === activeTab;
-                    });
-                    filtered.forEach(log => { appendLogToDom(log, false); });
-                    logContainer.scrollTop = logContainer.scrollHeight;
-                }
+                /**
+                 * バックエンドから受信した KanonState を DOM に反映する。
+                 */
+                function renderState(state) {
+                    if (!state) return;
 
-                function addLogData(data) {
-                    allLogs.push(data);
-                    if (shouldShow(data, activeTab)) {
-                        appendLogToDom(data, true);
+                    // セッション情報ヘッダー
+                    if (sessionIdLabel) {
+                        sessionIdLabel.textContent = state.sessionId
+                            ? 'Session: ' + state.sessionId.slice(0, 12) + '…'
+                            : 'セッション: --';
+                    }
+                    if (sessionTaskEl) {
+                        const taskText = state.task || 'タスクなし';
+                        sessionTaskEl.textContent = taskText;
+                        sessionTaskEl.title = taskText;
+                    }
+                    if (overallStatusBadge) {
+                        const statusMap = {
+                            idle: { label: 'idle', cls: 'overall-idle' },
+                            running: { label: '⚙ running', cls: 'overall-running' },
+                            done: { label: '✔ done', cls: 'overall-done' },
+                            error: { label: '✖ error', cls: 'overall-error' },
+                        };
+                        const info = statusMap[state.overallStatus] || statusMap.idle;
+                        overallStatusBadge.textContent = info.label;
+                        overallStatusBadge.className = 'overall-status-badge ' + info.cls;
+                    }
+
+                    // 更新時刻
+                    if (updatedAtEl && state.lastUpdated) {
+                        updatedAtEl.textContent = '更新: ' + new Date(state.lastUpdated).toLocaleTimeString();
+                    }
+
+                    // エージェントステータス表
+                    if (agentRowsEl && state.agents) {
+                        agentRowsEl.innerHTML = '';
+                        state.agents.forEach(agent => {
+                            const dotClass = {
+                                idle: 'dot-idle', running: 'dot-running',
+                                done: 'dot-done', error: 'dot-error'
+                            }[agent.status] || 'dot-idle';
+                            const labelClass = {
+                                running: 'label-running', done: 'label-done', error: 'label-error'
+                            }[agent.status] || '';
+                            const row = document.createElement('div');
+                            row.className = 'agent-row';
+                            row.innerHTML =
+                                '<span class="agent-dot ' + dotClass + '"></span>' +
+                                '<span class="agent-name">' + escHtml(agent.name) + '</span>' +
+                                '<span class="agent-status-label ' + labelClass + '">' + agent.status + '</span>' +
+                                '<span class="agent-msg">' + escHtml(agent.lastMessage || '') + '</span>';
+                            agentRowsEl.appendChild(row);
+                        });
+                    }
+
+                    // アクティビティ一覧（差分追記）
+                    if (activityEntriesEl && state.activities) {
+                        const newEntries = state.activities.slice(renderedActivityCount);
+                        newEntries.forEach(act => {
+                            activityEntriesEl.appendChild(buildActivityEntry(act));
+                        });
+                        renderedActivityCount = state.activities.length;
+                        // 新規追記があればスクロール
+                        if (newEntries.length > 0) {
+                            const listEl = document.getElementById('activity-list');
+                            if (listEl) listEl.scrollTop = listEl.scrollHeight;
+                        }
                     }
                 }
 
-                function shouldShow(log, tab) {
-                    if (tab === 'all') return true;
-                    const info = getRoleInfo(log.agent);
-                    return info.role === tab;
+                function buildActivityEntry(act) {
+                    const agentLower = (act.agent || '').toLowerCase();
+                    let agentClass = 'agent-system';
+                    if (agentLower.includes('conductor')) agentClass = 'agent-conductor';
+                    else if (agentLower.includes('architect')) agentClass = 'agent-architect';
+                    else if (agentLower.includes('developer')) agentClass = 'agent-developer';
+                    else if (agentLower.includes('qc') || agentLower.includes('gatekeeper')) agentClass = 'agent-qc';
+                    else if (agentLower.includes('error')) agentClass = 'agent-error-entry';
+
+                    const typeClass = act.type === 'status' ? ' type-status' : '';
+                    const timeStr = act.timestamp ? new Date(act.timestamp).toLocaleTimeString() : '';
+
+                    const el = document.createElement('div');
+                    el.className = 'activity-entry ' + agentClass + typeClass;
+                    el.innerHTML =
+                        '<span class="act-time">[' + timeStr + ']</span>' +
+                        '<span class="act-agent">' + escHtml(act.agent || '') + ':</span>' +
+                        '<span class="act-msg">' + escHtml(act.message || '') + '</span>';
+                    return el;
+                }
+
+                function escHtml(str) {
+                    return String(str)
+                        .replace(/&/g, '&amp;')
+                        .replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;')
+                        .replace(/"/g, '&quot;');
+                }
+
+                // ===== ログエリア（従来互換） =====
+
+                function addLogData(data) {
+                    allLogs.push(data);
+                    appendLogToDom(data, true);
                 }
 
                 function appendLogToDom(log, autoScroll) {
-                    const info = getRoleInfo(log.agent);
+                    const agentLower = (log.agent || '').toLowerCase();
+                    let agentClass = 'agent-system';
+                    if (agentLower.includes('conductor') || agentLower === 'antigravity') agentClass = 'agent-antigravity';
+                    else if (agentLower.includes('architect')) agentClass = 'agent-gemini';
+                    else if (agentLower.includes('developer')) agentClass = 'agent-opencode';
+                    else if (agentLower.includes('qc') || agentLower.includes('gatekeeper')) agentClass = 'agent-gatekeeper';
+
                     const entry = document.createElement('div');
-                    entry.className = 'log-entry ' + (info.class || '');
+                    entry.className = 'log-entry ' + agentClass;
                     if (log.type === 'status') {
                         entry.style.backgroundColor = 'rgba(78, 201, 176, 0.1)';
                         entry.style.fontWeight = 'bold';
                         entry.style.borderLeftWidth = '5px';
                     }
-                    const timeStr = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';
-                    entry.innerHTML = '<span class="log-time">[' + timeStr + ']</span><span class="log-agent">' + log.agent + ':</span><span class="log-message">' + log.message + '</span>';
-                    if (log.agent.toLowerCase().includes('error')) {
+                    if (agentLower.includes('error')) {
                         entry.style.borderLeftColor = '#F44336';
                         entry.style.backgroundColor = 'rgba(244, 67, 54, 0.1)';
                     }
+                    const timeStr = log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '';
+                    entry.innerHTML =
+                        '<span class="log-time">[' + timeStr + ']</span>' +
+                        '<span class="log-agent">' + escHtml(log.agent || '') + ':</span>' +
+                        '<span class="log-message">' + escHtml(log.message || '') + '</span>';
                     logContainer.appendChild(entry);
                     if (autoScroll !== false) {
                         logContainer.scrollTop = logContainer.scrollHeight;
                     }
                 }
 
-                // --- Chat Logic ---
+                // ===== チャット =====
                 function sendMessage() {
                     if (!chatInput) return;
                     const text = chatInput.value.trim();
@@ -490,7 +1027,7 @@ class KanonDashboardProvider {
                     });
                 }
 
-                // --- Toolbar Actions ---
+                // ===== Toolbar =====
                 const btnWorkflowPlan = document.getElementById('btn-workflow-plan');
                 if (btnWorkflowPlan) {
                     btnWorkflowPlan.addEventListener('click', () => {
@@ -529,77 +1066,104 @@ class KanonDashboardProvider {
                     btnClear.addEventListener('click', () => {
                         if (logContainer) logContainer.innerHTML = '';
                         allLogs = [];
+                        if (activityEntriesEl) activityEntriesEl.innerHTML = '';
+                        renderedActivityCount = 0;
                     });
                 }
 
-                // --- WebSocket ---
+                // ===== WebSocket（指数バックオフ再接続）=====
                 let ws = null;
                 let reconnectTimer = null;
                 let reconnectAttempts = 0;
+                const MAX_BACKOFF_MS = 30000;
+                const BASE_BACKOFF_MS = 1000;
+
+                function getBackoffMs(attempts) {
+                    // 指数バックオフ: 1s, 2s, 4s, 8s, 16s, 30s（上限）
+                    return Math.min(BASE_BACKOFF_MS * Math.pow(2, attempts), MAX_BACKOFF_MS);
+                }
+
+                function scheduleReconnect() {
+                    if (reconnectTimer !== null) return;
+                    const delay = getBackoffMs(reconnectAttempts);
+                    reconnectAttempts++;
+                    reconnectTimer = setTimeout(() => {
+                        reconnectTimer = null;
+                        connect();
+                    }, delay);
+                }
 
                 function connect() {
                     if (ws !== null) return;
                     try {
                         ws = new WebSocket('ws://localhost:3001');
+
                         ws.onopen = () => {
-                            updateStatus(true);
-                            addLogData({ agent: 'system', message: 'Kanon Orchestrator に接続しました', timestamp: new Date().toISOString() });
+                            updateStatus('connected');
                             reconnectAttempts = 0;
-                            if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
                         };
+
                         ws.onclose = () => {
-                            updateStatus(false);
+                            updateStatus('reconnecting');
                             ws = null;
-                            if (!reconnectTimer) {
-                                reconnectTimer = setInterval(() => {
-                                    reconnectAttempts++;
-                                    if (reconnectAttempts > 30) {
-                                        clearInterval(reconnectTimer);
-                                        reconnectTimer = setInterval(connect, 10000);
-                                    }
-                                    connect();
-                                }, 3000);
-                            }
+                            scheduleReconnect();
                         };
+
+                        ws.onerror = (err) => {
+                            console.error('WebSocket Error', err);
+                        };
+
                         ws.onmessage = (event) => {
                             try {
                                 const data = JSON.parse(event.data);
+
+                                // 状態メッセージ（type: 'state'）の場合は renderState で описат
+                                if (data.type === 'state' && data.state) {
+                                    renderState(data.state);
+                                    return;
+                                }
+
+                                // openChat アクション
                                 if (data.message && typeof data.message === 'string' && data.message.includes('"action":"openChat"')) {
                                     try {
                                         const actionData = JSON.parse(data.message);
                                         if (actionData.type === 'action' && actionData.action === 'openChat') {
                                             vscode.postMessage({ command: 'openChat', text: actionData.text });
-                                            addLogData({ agent: 'system', message: 'Triggered UI Chat Panel for final report.', timestamp: data.timestamp });
                                             return;
                                         }
-                                    } catch (e) { /* 非アクションメッセージのパースエラーは無視 */ }
+                                    } catch (e) { /* 非アクションメッセージは無視 */ }
                                 }
+
+                                // 従来の log メッセージ
                                 addLogData(data);
+
                             } catch (e) {
                                 console.error('WS parse error', e, event.data);
                             }
                         };
-                        ws.onerror = (err) => {
-                            console.error('WebSocket Error', err);
-                        };
                     } catch (e) {
                         console.error('WebSocket init failed', e);
+                        scheduleReconnect();
                     }
                 }
 
-                function updateStatus(connected) {
-                    if (statusEl) {
-                        if (connected) {
-                            statusEl.textContent = 'Connected';
-                            statusEl.className = 'status-badge status-connected';
-                        } else {
-                            statusEl.textContent = 'Disconnected';
-                            statusEl.className = 'status-badge status-disconnected';
-                        }
+                function updateStatus(state) {
+                    if (!statusEl) return;
+                    if (state === 'connected') {
+                        statusEl.textContent = 'Connected';
+                        statusEl.className = 'status-badge status-connected';
+                    } else if (state === 'reconnecting') {
+                        const delay = getBackoffMs(reconnectAttempts);
+                        statusEl.textContent = 'Reconnecting…';
+                        statusEl.className = 'status-badge status-reconnecting';
+                    } else {
+                        statusEl.textContent = 'Disconnected';
+                        statusEl.className = 'status-badge status-disconnected';
                     }
                 }
 
-                addLogData({ agent: 'system', message: 'ダッシュボードを初期化しました。', timestamp: new Date().toISOString() });
+                // 初期化
+                updateStatus('disconnected');
                 connect();
 
             </script>
