@@ -33,15 +33,33 @@ describe('WorktreeManager', () => {
             });
         });
 
-        it('100文字を超える長いタスクIDを切り詰める', async () => {
-            const longTaskId = 'a'.repeat(150);
+        it('100文字を超える長いタスクIDを切り詰め、プレフィックス込みで適切な長さに収める', async () => {
+            const longTaskId = 'a'.repeat(200);
             await worktreeManager.setupTaskEnvironment(longTaskId);
             
             const call = (mockSandboxRepository.createEnvironment as any).mock.calls[0][0];
             const envName = call.environmentName;
             
+            // プレフィックス(11) + サニタイズ(64) = 75文字程度に収まるべき
             expect(envName.startsWith('kanon-task-')).toBe(true);
-            expect(envName.length).toBeLessThanOrEqual(100); // ここで失敗することを期待（現在は切り詰めがない）
+            expect(envName.length).toBeLessThanOrEqual(100);
+            // ハッシュ（7文字）が含まれていることを確認
+            const parts = envName.split('-');
+            const hash = parts[parts.length - 1];
+            expect(hash.length).toBe(7);
+        });
+
+        it('異なる長いタスクIDが、切り詰め後もハッシュによって区別される', async () => {
+            const longTaskId1 = 'a'.repeat(200) + '1';
+            const longTaskId2 = 'a'.repeat(200) + '2';
+            
+            await worktreeManager.setupTaskEnvironment(longTaskId1);
+            await worktreeManager.setupTaskEnvironment(longTaskId2);
+            
+            const envName1 = (mockSandboxRepository.createEnvironment as any).mock.calls[0][0].environmentName;
+            const envName2 = (mockSandboxRepository.createEnvironment as any).mock.calls[1][0].environmentName;
+            
+            expect(envName1).not.toBe(envName2);
         });
 
         it('末尾にドットがある場合に削除する', async () => {

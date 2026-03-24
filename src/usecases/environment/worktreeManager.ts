@@ -11,6 +11,8 @@ export class WorktreeManager {
      * @returns サニタイズされたタスク名
      */
     private sanitizeTaskName(taskId: string, maxLength: number = 64): string {
+        const TARGET_MAX_LEN = maxLength;
+
         if (!taskId) {
             return `task-${Date.now()}`;
         }
@@ -27,10 +29,10 @@ export class WorktreeManager {
         }
 
         // 切り詰めが必要な場合、一意性を確保するためにハッシュ（最初の7文字）を付与
-        if (safe.length > maxLength) {
+        if (safe.length > TARGET_MAX_LEN) {
             const hash = createHash('sha256').update(taskId).digest('hex').slice(0, 7);
-            const prefix = safe.slice(0, maxLength - 8); // ハイフン + ハッシュの分（8文字）を引く
-            safe = `${prefix}-${hash}`.replace(/-+$/g, ''); // 末尾のハイフンを念のため削除
+            const prefix = safe.slice(0, TARGET_MAX_LEN - 8); // ハイフン + ハッシュの分（8文字）を引く
+            safe = `${prefix}-${hash}`.replace(/-+/g, '-').replace(/^-|-$/g, '');
         }
 
         return safe;

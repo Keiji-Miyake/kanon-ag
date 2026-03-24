@@ -642,21 +642,16 @@ async function runExecute(args: string[]) {
             throw new Error('Task implementation failed validation.');
         }
     } catch (error: unknown) {
-        // セッションが running のまま残らないように、必ず failed に更新する
-        try {
-            const session = readSession(process.cwd());
-            if (session && (session.status === 'running' || session.status === 'initializing')) {
-                updateSession('failed', 'execute', process.cwd(), 'execute', taskForResume);
-                Logger.log('⚠️ セッションステータスを failed に更新しました。', 'System');
-            }
-        } catch (_) { /* セッション更新の失敗は無視 */ }
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        Logger.log(`⚠️ Orchestration Interrupted: ${errorMessage}`, 'warning');
+        Logger.log(`[Safety] Preserving worktree at: ${targetDir}`, 'system');
+        Logger.log(`You can inspect or continue the work manually in that directory.`, 'system');
 
-        // worktree の安全なクリーンアップを試みる
         try {
-            await worktreeMgr.abortAndCleanup(targetDir);
-        } catch (_) { /* クリーンアップの失敗は無視 */ }
+            updateSession('failed', 'execute', process.cwd(), 'execute', taskForResume);
+        } catch (_) { }
 
-        throw error; // 上位の catch (main関数) に再スロー
+        throw error;
     }
 }
 
@@ -966,6 +961,21 @@ async function startUI(_args: string[]) {
 
 async function runInit(_args: string[]) {
     Logger.log('Initializing Kanon Orchestrator in current directory...', 'system');
+
+    // 最初に Git リポジトリとして初期化し、空のコミットを作成する（worktree作成のため）
+    try {
+        const isGitRoot = fs.existsSync(path.join(process.cwd(), '.git'));
+        if (!isGitRoot) {
+            await execAsync('git init');
+            await execAsync('git config user.name "Kanon Agent"');
+            await execAsync('git config user.email "kanon@example.com"');
+            await execAsync('git commit --allow-empty -m "Initial commit for Kanon workspace"');
+            Logger.log('✅ Initialized an isolated git repository for Kanon.', 'system');
+        }
+    } catch (e: any) {
+        Logger.log(`⚠️ Git initialization failed: ${e.message}`, 'warning');
+    }
+
     const kanonDir = path.join(process.cwd(), '.kanon');
     fs.mkdirSync(kanonDir, { recursive: true });
 
