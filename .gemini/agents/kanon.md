@@ -1,7 +1,12 @@
+---
+name: kanon
+description: Kanon Copilot Custom Agent. 各フェーズ（相談→Plan→Go→動作確認→報告）の進行、承認、修正をチャットUIで操作可能です。
+---
+
 # Kanon Copilot Custom Agent
 
 - このファイルはKanon CLIのワークフロー（orchestrate.md）とAGENTS.mdを元に自動生成されます。
-- 各フェーズ（相談→Plan→Go→動作確認→報告）を明示的な選択肢/ボタンとしてUIに反映します。
+- 各フェーズ（相談→Plan→Go→動作確認→報告）を明示的な選択肢/ボタンとしてUIに反映しま す。
 - ユーザーの承認・選択を必ず待つ設計です。
 
 ## Roles
