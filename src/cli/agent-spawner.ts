@@ -184,9 +184,9 @@ export function spawnAgent(
                 if (line.trim()) onLog(line.trim(), false);
             });
         }
-        // 最後の 10KB だけ保持
-        if (agent.stdout.length > 10240) {
-            agent.stdout = agent.stdout.slice(-10240);
+        // 最後の 10MB だけ保持 (1024 * 1024 * 10)
+        if (agent.stdout.length > 10485760) {
+            agent.stdout = agent.stdout.slice(-10485760);
         }
     });
 
@@ -198,8 +198,8 @@ export function spawnAgent(
                 if (line.trim()) onLog(line.trim(), true);
             });
         }
-        if (agent.stderr.length > 10240) {
-            agent.stderr = agent.stderr.slice(-10240);
+        if (agent.stderr.length > 10485760) {
+            agent.stderr = agent.stderr.slice(-10485760);
         }
     });
 

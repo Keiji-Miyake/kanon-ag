@@ -36,6 +36,20 @@ export interface FacetedPrompt {
 }
 
 // 追加分
+export type OutputFormat = 'json' | 'markdown' | 'text';
+
+export interface OutputContract {
+    format: OutputFormat;
+    schema?: Record<string, unknown>; // JSON Schema定義 (format: 'json' の場合必須)
+    example?: string;
+}
+
+export interface ValidationResult {
+    isValid: boolean;
+    errors: string[];
+    parsedData?: unknown; // パースに成功したJSONデータ等
+}
+
 export type FacetType = 'persona' | 'policy' | 'knowledge' | 'instruction';
 
 export interface PromptFacet {
