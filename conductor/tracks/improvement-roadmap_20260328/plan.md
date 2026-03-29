@@ -6,7 +6,7 @@
 - [x] Task: 全体の計画をMarkdownマイルストーン形式（例: `docs/ROADMAP.md`）にまとめる
 - [x] Task: Conductor - User Manual Verification 'ロードマップのドラフト作成' (Protocol in workflow.md)
 
-## Phase: レビューと修正
-- [~] Task: ドラフトされたロードマップを精査し、短期的な実現可能性とプロジェクト方針との整合性を確認する
-- [ ] Task: 発見された課題や改善点をロードマップドキュメントに反映・コミットする
-- [ ] Task: Conductor - User Manual Verification 'レビューと修正' (Protocol in workflow.md)
+## Phase: レビューと修正 [checkpoint: 9fc0c84]
+- [x] Task: ドラフトされたロードマップを精査し、短期的な実現可能性とプロジェクト方針との整合性を確認する
+- [x] Task: 発見された課題や改善点をロードマップドキュメントに反映・コミットする
+- [x] Task: Conductor - User Manual Verification 'レビューと修正' (Protocol in workflow.md)
