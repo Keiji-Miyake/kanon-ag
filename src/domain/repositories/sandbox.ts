@@ -21,7 +21,22 @@ export interface SandboxRepository {
     discardEnvironment(environmentPath: string): Promise<void>;
 
     /**
+     * 環境（ブランチ）をベースブランチへマージします。
+     */
+    mergeEnvironment(environmentPath: string): Promise<void>;
+
+    /**
+     * 環境（ワークツリーおよびブランチ）を完全に削除します。
+     */
+    removeEnvironment(environmentPath: string): Promise<void>;
+
+    /**
      * 環境にアクティブなプロセスやコミットされていない変更があるかをチェックします。
      */
     isDirty(environmentPath: string): Promise<boolean>;
+
+    /**
+     * 名前をGitブランチ名としてサニタイズします。
+     */
+    sanitizeBranchName(name: string): string;
 }

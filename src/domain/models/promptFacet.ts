@@ -34,3 +34,19 @@ export interface FacetedPrompt {
     knowledge: Knowledge;
     outputContract: OutputContract;
 }
+
+// 追加分
+export type FacetType = 'persona' | 'policy' | 'knowledge' | 'instruction';
+
+export interface PromptFacet {
+    name: string;
+    type: FacetType;
+    content: string;
+}
+
+export interface PromptBlueprint {
+    persona?: string;
+    policies?: string[];
+    knowledge?: string[];
+    instruction?: string;
+}

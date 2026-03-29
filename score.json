@@ -1,0 +1,30 @@
+{
+  "name": "Kanon Self-Improvement: Output Contract",
+  "description": "Implement Output Contract validation logic using Kanon itself.",
+  "initialPassage": "design_specification",
+  "passages": [
+    {
+      "name": "design_specification",
+      "displayName": "Design Output Contract Schema and Validator",
+      "skill": "architect",
+      "persona": "architect",
+      "policies": ["coding-standard"],
+      "next": "implementation"
+    },
+    {
+      "name": "implementation",
+      "displayName": "Implement OutputValidator and integration tests",
+      "skill": "developer",
+      "persona": "developer",
+      "policies": ["coding-standard"],
+      "next": "code_review"
+    },
+    {
+      "name": "code_review",
+      "displayName": "Review the implementation and ensure quality",
+      "skill": "reviewer",
+      "persona": "reviewer",
+      "policies": ["coding-standard"]
+    }
+  ]
+}

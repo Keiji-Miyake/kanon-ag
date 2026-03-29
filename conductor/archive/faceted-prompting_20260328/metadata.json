@@ -1,0 +1,8 @@
+{
+  "track_id": "faceted-prompting_20260328",
+  "type": "feature",
+  "status": "new",
+  "created_at": "2026-03-28T00:00:00Z",
+  "updated_at": "2026-03-28T00:00:00Z",
+  "description": "Kanon のエージェント定義を Persona, Policy, Knowledge, Instruction に分割し、再利用性を高める Faceted Prompting の導入。"
+}

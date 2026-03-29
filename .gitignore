@@ -59,8 +59,16 @@ build/
 thought
 
 
+# .gemini/
 .gemini/
+!.gemini/settings.json
+!.gemini/agents/
+!.gemini/agents/*.md
+
+# .github/
 .github/
+!.github/agents/
+!.github/agents/*.agent.md
 .opencode/
 .takt/
 

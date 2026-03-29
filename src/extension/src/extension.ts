@@ -174,9 +174,10 @@ function parseMemoriesToState(memoriesDir: string): Partial<KanonState> {
         console.error('[Kanon] .memories/ パースエラー:', err);
     }
 
-    // セットアップ状態の確認: AGENTS.md の存在をもって初期化済みとみなす
-    const agentsMdPath = path.join(path.dirname(memoriesDir), 'AGENTS.md');
-    updates.isInitialized = fs.existsSync(agentsMdPath);
+    // セットアップ状態の確認: .kanon ディレクトリの存在をもって初期化済みとみなす
+    // (.kanon は .gitignore に含まれるローカル固有のディレクトリ。AGENTS.md はリポジトリにコミット済みのため判定に使えない)
+    const kanonDirPath = path.join(path.dirname(memoriesDir), '.kanon');
+    updates.isInitialized = fs.existsSync(kanonDirPath);
 
     return updates;
 }
@@ -204,18 +205,18 @@ function startFileWatcher(workspaceRoot: string) {
         fs.mkdirSync(memoriesDir, { recursive: true });
     }
 
-    const agentsMdPath = path.join(workspaceRoot, 'AGENTS.md');
+    const kanonDirPath = path.join(workspaceRoot, '.kanon');
 
     // 初期状態をロード
     const initialUpdates = parseMemoriesToState(memoriesDir);
-    initialUpdates.isInitialized = fs.existsSync(agentsMdPath);
+    initialUpdates.isInitialized = fs.existsSync(kanonDirPath);
     currentState = { ...currentState, ...initialUpdates, lastUpdated: new Date().toISOString() };
 
     if (fileWatcher) {
         fileWatcher.close();
     }
 
-    fileWatcher = chokidar.watch([memoriesDir, agentsMdPath], {
+    fileWatcher = chokidar.watch([memoriesDir, kanonDirPath], {
         ignoreInitial: false,
         persistent: true,
         depth: 3,
@@ -255,7 +256,7 @@ function startFileWatcher(workspaceRoot: string) {
         .on('unlink', onFileChange)
         .on('error', (err) => console.error('[Kanon] chokidar エラー:', err));
 
-    console.log(`[Kanon] ファイル監視開始: ${memoriesDir}, ${agentsMdPath}`);
+    console.log(`[Kanon] ファイル監視開始: ${memoriesDir}, ${kanonDirPath}`);
 }
 
 function stopFileWatcher() {
@@ -384,10 +385,10 @@ export function activate(context: vscode.ExtensionContext) {
 function ensureBootstrapWorkflow(workspaceRoot: string) {
     const workflowDir = path.join(workspaceRoot, '.agent', 'workflows');
     const workflowPath = path.join(workflowDir, 'orchestrate.md');
-    const agentsMdPath = path.join(workspaceRoot, 'AGENTS.md');
+    const kanonDirPath = path.join(workspaceRoot, '.kanon');
 
-    // 既に AGENTS.md があるか、orchestrate.md がある場合は何もしない
-    if (fs.existsSync(agentsMdPath) || fs.existsSync(workflowPath)) {
+    // 既に .kanon があるか（init済み）、orchestrate.md がある場合は何もしない
+    if (fs.existsSync(kanonDirPath) || fs.existsSync(workflowPath)) {
         return;
     }
 

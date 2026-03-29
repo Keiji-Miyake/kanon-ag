@@ -140,7 +140,7 @@ export class CliAgentRunner implements AgentRunner {
                 }); // stdin 経由での送信を廃止
 
                 // タイムアウトと終了を待機
-                const timeoutMs = 300000; // 5分
+                const timeoutMs = 900000; // 15分（複雑なプロジェクト生成対応）
                 const result = await Promise.race([
                     agentProcess.promise,
                     new Promise<string>((_, reject) => {
