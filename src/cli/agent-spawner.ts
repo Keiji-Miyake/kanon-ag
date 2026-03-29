@@ -20,8 +20,10 @@ export interface SpawnConfig {
     maxParallel: number;
     /** ポーリング間隔（ms） */
     pollIntervalMs: number;
-    /** リトライ遅延（ms配列） */
-    retryDelaysMs: number[];
+    /** リトライ遅延（ms配列）。test/既存コードとの互換のためどちらかを指定できる */
+    retryDelaysMs?: number[];
+    /** リトライ設定（新方式） */
+    retryConfig?: { maxRetries: number; initialDelayMs: number; backoffFactor: number };
     /** タイムアウト（ms、0=無制限） */
     timeoutMs: number;
 }
@@ -52,10 +54,25 @@ export interface SpawnResult {
 
 export const DEFAULT_SPAWN_CONFIG: SpawnConfig = {
     maxParallel: 3,
-    pollIntervalMs: 1000, // 15sから1sに短縮
+    pollIntervalMs: 1000, // 1s
     retryDelaysMs: [30000, 60000],
+    retryConfig: { maxRetries: 2, initialDelayMs: 30000, backoffFactor: 2.0 },
     timeoutMs: 600000, // 10分
 };
+
+/**
+ * retryConfig から遅延配列を構築するユーティリティ
+ */
+function computeRetryDelays(config: SpawnConfig): number[] {
+    if (Array.isArray(config.retryDelaysMs) && config.retryDelaysMs.length > 0) return config.retryDelaysMs;
+    const rc = config.retryConfig || (DEFAULT_SPAWN_CONFIG.retryConfig as any);
+    if (!rc) return DEFAULT_SPAWN_CONFIG.retryDelaysMs || [];
+    const delays: number[] = [];
+    for (let i = 0; i < rc.maxRetries; i++) {
+        delays.push(Math.round(rc.initialDelayMs * Math.pow(rc.backoffFactor, i)));
+    }
+    return delays;
+}
 
 // ─── Agent Registry ─────────────────────────────────────────
 
@@ -297,6 +314,9 @@ export async function executeBatch(
     const failed = new Set<string>();
     const retryCountMap: Map<string, number> = new Map();
 
+    // retry 設定互換: retryDelays を決定
+    const retryDelays = computeRetryDelays(config);
+
     while (pending.size > 0) {
         // 依存が解決済みで、まだ起動していないタスクを取得
         const ready = tasks.filter(t =>
@@ -341,8 +361,8 @@ export async function executeBatch(
                 } else {
                     // リトライ判定
                     const retries = retryCountMap.get(task.skill) || 0;
-                    if (retries < config.retryDelaysMs.length) {
-                        const delay = config.retryDelaysMs[retries];
+                    if (retries < retryDelays.length) {
+                        const delay = retryDelays[retries];
                         retryCountMap.set(task.skill, retries + 1);
                         // レジストリから削除して再起動可能にする
                         agentRegistry.delete(registryKey(sessionId, task.skill));
