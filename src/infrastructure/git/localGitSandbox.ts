@@ -32,10 +32,9 @@ export class LocalGitSandbox implements SandboxRepository {
         s = s.trim();
         // Replace dots and whitespace sequences with hyphen
         s = s.replace(/\s+/g, '-').replace(/\./g, '-');
-        // Remove characters except letters, numbers, hyphen, slash, underscore, and CJK characters
-        // Allow Unicode letters (\\p{L}), numbers (\\p{N}), hyphen, slash, underscore
-        s = s.replace(/[^
-\p{L}\p{N}\/\-_\-]+/gu, '');
+        // Remove characters except letters, numbers, hyphen, slash, underscore, and common Unicode letters/numbers
+        // Use Unicode property escapes to allow letters and numbers from all scripts
+        s = s.replace(/[^\p{L}\p{N}\/\-_]+/gu, '');
         // Lowercase ASCII letters
         s = s.replace(/[A-Z]/g, (c) => c.toLowerCase());
         // Collapse multiple hyphens
@@ -44,6 +43,8 @@ export class LocalGitSandbox implements SandboxRepository {
         s = s.replace(/^-+|-+$/g, '');
 
         if (!s) return 'task';
+        // 英字または数字が含まれているか（Unicode 対応）。含まれない場合は 'task' を返す
+        if (!/[\p{L}\p{N}]/u.test(s)) return 'task';
         return s;
     }
 
