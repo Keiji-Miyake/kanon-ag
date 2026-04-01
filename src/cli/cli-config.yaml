@@ -6,42 +6,34 @@ default_cli: gemini
 # 役割ごとに使用するCLI、モデル、およびフォールバック（代わりのモデル・CLI）を定義します。
 agents:
   architect:
-    cli: gemini
-    model_primary: gemini-3.1-pro-preview
-    model_backups: gemini-2.5-pro, gemini-3-flash-preview
+    cli: copilot
+    model_primary: github-copilot/claude-opus-4.6
+    model_backups: gemini-3-flash-preview, github-copilot/gpt-5.4
 
   reviewer:
-    cli: gemini
-    model_primary: gemini-3.1-pro-preview
-    model_backups: gemini-2.5-pro, gemini-3-flash-preview
-    cli_backup: copilot
-    cli_backup_model: claude-opus-4.6
+    cli: copilot
+    model_primary: github-copilot/gpt-5.4
+    model_backups: github-copilot/claude-opus-4.6, gemini-3-flash-preview
 
   developer:
     cli: opencode
-    model_primary: github-copilot/gpt-5-mini
-    model_backups: github-copilot/claude-sonnet-4.6, github-copilot/gpt-5.4
-    cli_backup: copilot
-    cli_backup_model: github-copilot/gpt-5-mini
+    model_primary: github-copilot/claude-opus-4.6
+    model_backups: github-copilot/gpt-5.4, github-copilot/claude-sonnet-4.6
 
   creator:
     cli: copilot
-    model_primary: gpt-5-mini
-    model_backups: gpt-4.1
-    cli_backup: gemini
-    cli_backup_model: gemini-2.5-flash-lite
+    model_primary: github-copilot/claude-opus-4.6
+    model_backups: github-copilot/gpt-5.4
 
   tester:
     cli: copilot
-    model_primary: gpt-5-mini
-    model_backups: gpt-4.1
-    cli_backup: gemini
-    cli_backup_model: gemini-2.5-flash-lite
+    model_primary: github-copilot/gpt-5.4
+    model_backups: github-copilot/claude-opus-4.6
 
 # スキルと使用するデフォルトのCLIのマッピング
 skill_cli_mapping:
-  architect: gemini
-  reviewer: gemini
+  architect: copilot
+  reviewer: copilot
   developer: opencode
   creator: copilot
   tester: copilot

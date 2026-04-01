@@ -32,6 +32,8 @@ export interface SessionInfo {
     startedAt: string;
     updatedAt: string;
     workspace: string;
+    currentPassage?: string; // 現在の Passage
+    worktreePath?: string;   // ワークツリーの絶対パス
 }
 
 export interface TaskEntry {
@@ -99,9 +101,9 @@ export function initSession(sessionId: string, workspace?: string): SessionInfo 
     // 既存のセッションがあれば履歴にアーカイブ
     if (fs.existsSync(memoriesDir)) {
         try {
-            const oldSessionPath = path.join(memoriesDir, 'session.md');
-            if (fs.existsSync(oldSessionPath)) {
-                const oldSession = parseSessionMd(fs.readFileSync(oldSessionPath, 'utf-8'));
+            const jsonPath = path.join(memoriesDir, 'session.json');
+            if (fs.existsSync(jsonPath)) {
+                const oldSession = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
                 if (oldSession && oldSession.id && oldSession.id !== sessionId) {
                     ensureDir(historyDir);
                     const archivePath = path.join(historyDir, oldSession.id);
@@ -128,12 +130,10 @@ export function initSession(sessionId: string, workspace?: string): SessionInfo 
         workspace: base,
     };
 
-    const content = formatSessionMd(session);
-    fs.writeFileSync(path.join(memoriesDir, 'session.md'), content, 'utf-8');
+    saveSession(session, base);
 
     // 空の task-board を作成
-    const taskBoardContent = formatTaskBoardMd([]);
-    fs.writeFileSync(path.join(memoriesDir, 'task-board.md'), taskBoardContent, 'utf-8');
+    updateTaskBoard([], base);
 
     // 空の metrics を作成
     const metrics: MetricsData = {
@@ -151,38 +151,53 @@ export function initSession(sessionId: string, workspace?: string): SessionInfo 
     return session;
 }
 
+function saveSession(session: SessionInfo, workspace?: string): void {
+    const base = getBaseDir(workspace);
+    const memoriesDir = path.join(base, MEMORIES_DIR);
+    
+    // JSON 保存 (Source of Truth)
+    fs.writeFileSync(path.join(memoriesDir, 'session.json'), JSON.stringify(session, null, 2), 'utf-8');
+    
+    // Markdown 保存 (Human Readable)
+    fs.writeFileSync(path.join(memoriesDir, 'session.md'), formatSessionMd(session), 'utf-8');
+}
+
 export function updateSession(
     status: SessionInfo['status'],
     phase: string,
     workspace?: string,
     command?: string,
     targetTask?: string,
+    currentPassage?: string,
+    worktreePath?: string,
 ): void {
     const base = getBaseDir(workspace);
-    const sessionPath = path.join(base, MEMORIES_DIR, 'session.md');
-
-    if (!fs.existsSync(sessionPath)) {
-        throw new Error(`セッションが初期化されていません: ${sessionPath}`);
+    const session = readSession(base);
+    
+    if (!session) {
+        throw new Error(`セッションが初期化されていません: ${base}`);
     }
 
-    const session = parseSessionMd(fs.readFileSync(sessionPath, 'utf-8'));
     session.status = status;
     session.phase = phase;
     if (command !== undefined) session.command = command;
     if (targetTask !== undefined) session.targetTask = targetTask;
+    if (currentPassage !== undefined) session.currentPassage = currentPassage;
+    if (worktreePath !== undefined) session.worktreePath = worktreePath;
     session.updatedAt = new Date().toISOString();
 
-    fs.writeFileSync(sessionPath, formatSessionMd(session), 'utf-8');
+    saveSession(session, base);
 }
 
 export function readSession(workspace?: string): SessionInfo | null {
     const base = getBaseDir(workspace);
-    const sessionPath = path.join(base, MEMORIES_DIR, 'session.md');
+    const jsonPath = path.join(base, MEMORIES_DIR, 'session.json');
 
-    if (!fs.existsSync(sessionPath)) {
+    if (!fs.existsSync(jsonPath)) {
         return null;
     }
-    const session = parseSessionMd(fs.readFileSync(sessionPath, 'utf-8'));
+    
+    const session: SessionInfo = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
 
     // ステイル（古い）セッション検出: 30分以上 running のままなら failed とみなす
     if (session.status === 'running' || session.status === 'initializing') {
@@ -193,8 +208,8 @@ export function readSession(workspace?: string): SessionInfo | null {
             try {
                 session.status = 'failed';
                 session.updatedAt = new Date().toISOString();
-                fs.writeFileSync(sessionPath, formatSessionMd(session), 'utf-8');
-            } catch (_) { /* 書き込み失敗時は無視 */ }
+                saveSession(session, base);
+            } catch (_) { /* ignore */ }
         }
     }
 
@@ -205,20 +220,24 @@ export function readSession(workspace?: string): SessionInfo | null {
 
 export function updateTaskBoard(tasks: TaskEntry[], workspace?: string): void {
     const base = getBaseDir(workspace);
-    const taskBoardPath = path.join(base, MEMORIES_DIR, 'task-board.md');
+    const memoriesDir = path.join(base, MEMORIES_DIR);
+    ensureDir(memoriesDir);
 
-    ensureDir(path.join(base, MEMORIES_DIR));
-    fs.writeFileSync(taskBoardPath, formatTaskBoardMd(tasks), 'utf-8');
+    // JSON 保存
+    fs.writeFileSync(path.join(memoriesDir, 'task-board.json'), JSON.stringify(tasks, null, 2), 'utf-8');
+    
+    // Markdown 保存
+    fs.writeFileSync(path.join(memoriesDir, 'task-board.md'), formatTaskBoardMd(tasks), 'utf-8');
 }
 
 export function readTaskBoard(workspace?: string): TaskEntry[] {
     const base = getBaseDir(workspace);
-    const taskBoardPath = path.join(base, MEMORIES_DIR, 'task-board.md');
+    const jsonPath = path.join(base, MEMORIES_DIR, 'task-board.json');
 
-    if (!fs.existsSync(taskBoardPath)) {
+    if (!fs.existsSync(jsonPath)) {
         return [];
     }
-    return parseTaskBoardMd(fs.readFileSync(taskBoardPath, 'utf-8'));
+    return JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
 }
 
 // ─── Progress ───────────────────────────────────────────────
@@ -348,37 +367,14 @@ function formatSessionMd(session: SessionInfo): string {
 | **フェーズ** | ${session.phase} |
 | **コマンド** | ${session.command || '-'} |
 | **対象タスク** | ${session.targetTask || '-'} |
+| **現在の Passage** | ${session.currentPassage || '-'} |
+| **ワークツリー** | ${session.worktreePath || '-'} |
 | **開始** | ${session.startedAt} |
 | **更新** | ${session.updatedAt} |
 | **ワークスペース** | ${session.workspace} |
 `;
 }
 
-function parseSessionMd(content: string): SessionInfo {
-    const getField = (label: string): string => {
-        const regex = new RegExp(`\\*\\*${label}\\*\\*\\s*\\|\\s*(.+?)\\s*\\|\\s*$`, 'm');
-        const match = content.match(regex);
-        return match ? match[1].trim() : '';
-    };
-
-    const idMatch = content.match(/^# Session: (.+)$/m);
-    // アイコン（Unicode絵文字）を除去してステータス文字列のみ取得
-    const statusRaw = getField('ステータス').replace(/^[\p{Emoji}\p{Emoji_Presentation}\p{Emoji_Modifier}\p{Emoji_Component}\uFE0F\u200D]+\s*/u, '');
-
-    const cmd = getField('コマンド');
-    const task = getField('対象タスク');
-
-    return {
-        id: idMatch ? idMatch[1].trim() : 'unknown',
-        status: statusRaw as SessionInfo['status'],
-        phase: getField('フェーズ'),
-        command: cmd && cmd !== '-' ? cmd : undefined,
-        targetTask: task && task !== '-' ? task : undefined,
-        startedAt: getField('開始'),
-        updatedAt: getField('更新'),
-        workspace: getField('ワークスペース'),
-    };
-}
 
 function formatTaskBoardMd(tasks: TaskEntry[]): string {
     let md = `# Task Board\n\n`;
@@ -405,39 +401,6 @@ function formatTaskBoardMd(tasks: TaskEntry[]): string {
 function parseTaskBoardMd(content: string): TaskEntry[] {
     const lines = content.split('\n');
     const tasks: TaskEntry[] = [];
-
-    // テーブル行（ヘッダーとセパレーターをスキップ）
-    let tableStarted = false;
-    for (const line of lines) {
-        if (line.startsWith('|----')) {
-            tableStarted = true;
-            continue;
-        }
-        if (!tableStarted || !line.startsWith('|') || line.startsWith('| Skill')) {
-            continue;
-        }
-        if (line.startsWith('_')) break;
-
-        const cols = line.split('|').map((c) => c.trim()).filter(Boolean);
-        if (cols.length < 8) continue;
-
-        const statusRaw = cols[2].replace(/^[^\s]+\s+/, ''); // アイコン除去
-
-        tasks.push({
-            skill: cols[0],
-            cli: cols[1],
-            status: statusRaw as TaskEntry['status'],
-            turns: parseInt(cols[3], 10) || 0,
-            startedAt: cols[4] === '-' ? null : cols[4],
-            completedAt: cols[5] === '-' ? null : cols[5],
-            pid: cols[6] === '-' ? null : parseInt(cols[6], 10),
-            retryCount: parseInt(cols[7], 10) || 0,
-        });
-    }
-
-    return tasks;
-}
-
 function formatResultMd(data: ResultData): string {
     const icon = data.status === 'success' ? '✅' : '❌';
     const elapsed = formatElapsed(data.elapsedMs);

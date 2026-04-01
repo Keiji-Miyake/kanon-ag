@@ -11,27 +11,15 @@ const execAsync = promisify(exec);
 import { WebSocketServer, WebSocket } from 'ws';
 
 import { loadConfig, resolveCli, buildCommandArgs, ensureConfig } from './cli-resolver.js';
-import { spawnAgent, getAgentStatus, cleanupSession } from './agent-spawner.js';
-import { readSession, updateSession, initSession } from './memory-manager.js';
+import { spawnAgent, getAgentStatus, cleanupSession, checkTimeout, killAgent, DEFAULT_SPAWN_CONFIG } from './agent-spawner.js';
+import { readSession, updateSession, initSession, SessionInfo } from './memory-manager.js';
 import { runDashboard } from './dashboard.js';
 
 // 新アーキテクチャインポート群
-import { WorktreeManager } from '../usecases/environment/worktreeManager.js';
-import { LocalGitSandbox } from '../infrastructure/git/localGitSandbox.js';
-import { ReviewOrchestrator } from '../usecases/orchestration/reviewOrchestrator.js';
-import { CliAgentRunner } from './agent-runner-impl.js';
-import { Instruction } from '../domain/models/promptFacet.js';
-import { Issue } from '../domain/models/feedback.js';
+import { OrchestrationService } from '../usecases/orchestration/orchestrationService.js';
 
 // Score システムのインポート
 import { Score, Passage } from '../domain/models/score.js';
-import { ScoreExecutor } from '../domain/services/scoreExecutor.js';
-import { RuleEngine } from '../domain/services/ruleEngine.js';
-import { LoopWatchdog } from '../domain/services/loopWatchdog.js';
-import { PromptAssembler } from '../domain/services/promptAssembler.js';
-import { ParallelRunner } from '../domain/services/parallelRunner.js';
-import { ConsensusService, AgentOutput } from '../domain/services/consensusService.js';
-import { WorktreeOrchestrator } from '../domain/services/worktreeOrchestrator.js';
 
 
 // Global logger for real-time streaming to UI
@@ -264,6 +252,23 @@ export class Logger {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+async function runResumeScore(args: string[]) {
+    Logger.log('Checking for interrupted score session...', 'Conductor');
+
+    const session = readSession();
+    if (!session || session.command !== 'score') {
+        Logger.log('⚠️ 再開可能な Score セッションが見つかりません。', 'system');
+        return;
+    }
+
+    if (session.status === 'completed') {
+        Logger.log('✅ 前回の Score セッションは正常に完了しています。', 'system');
+        return;
+    }
+
+    await runScore(args, session);
+}
+
 async function main() {
     const args = process.argv.slice(2);
     const command = args[0] || 'help';
@@ -330,7 +335,11 @@ async function main() {
                 break;
             case 'score':
                 await Logger.setupHub();
-                await runScore(args);
+                if (args.includes('--resume')) {
+                    await runResumeScore(args);
+                } else {
+                    await runScore(args);
+                }
                 break;
             default:
                 await Logger.setupHub();
@@ -375,7 +384,8 @@ Commands:
   dashboard  Start terminal-based monitoring dashboard
   ui        Start Dashboard Extension Server
   init      Initialize kanon in current directory
-  resume    Resume an interrupted session
+  resume    Resume an interrupted session (plan/execute/run)
+  score     Execute Score-based autonomous loop (use --resume to resume)
   history   List past sessions
   replay    Replay a past session in the dashboard (e.g. replay session-123)
 
@@ -573,28 +583,13 @@ async function listProjectFiles(): Promise<string[]> {
 
 /**
  * 次世代アーキテクチャ (Phase 1-5) による本番実行ロジック。
- * WorktreeManagerによる隔離環境とReviewOrchestratorによる自律デバッグループを利用する。
  */
 async function runExecute(args: string[]) {
-    Logger.log('Starting execution with Kanon Architecture (DDD/FSM)', 'Conductor');
-
-    // セッション状態を永続化（再開用）
     const taskForResume = getArg(args, 'task') || 'execute';
     ensureSession('execute', taskForResume, 'execute');
 
     const sessionId = `session-${Date.now()}`;
     Logger.setCurrentSessionId(sessionId);
-
-    const config = loadConfig();
-    const sandbox = new LocalGitSandbox(process.cwd(), config.worktreeDir || 'worktree');
-    const worktreeMgr = new WorktreeManager(sandbox);
-    const runner = new CliAgentRunner();
-    const orchestrator = new ReviewOrchestrator(
-        sessionId,
-        ['reviewer', 'creator', 'tester'],
-        runner,
-        (status, metadata) => Logger.log(status, 'Conductor', metadata)
-    );
 
     const planPath = path.join(process.cwd(), 'implementation_plan.md');
     let planContent = 'No plan found.';
@@ -603,175 +598,11 @@ async function runExecute(args: string[]) {
         planContent = fs.readFileSync(planPath, 'utf-8');
         taskNameBase = planContent.substring(0, 30).replace(/[^a-zA-Z0-9-]/g, '').toLowerCase() || 'task';
     }
-
     const taskName = getArg(args, 'task') || `${taskNameBase}-${Date.now()}`;
-    const targetDir = await worktreeMgr.setupTaskEnvironment(taskName, 'main');
 
-    Logger.log(`Isolated environment created at: ${targetDir}`, 'Conductor');
-
-    const instruction: Instruction = {
-        objective: 'Implement the task according to the plan.',
-        tasks: ['Read the provided implementation plan carefully.', 'Write robust code in the workspace.', 'Ensure tests pass if any.', `Plan Content:\n${planContent}`]
-    };
-
-    Logger.log('Orchestrating multi-agent collaboration: Developer, Creator, Reviewers, and Tester...', 'Conductor');
-    Logger.log('Starting parallel review & self-correction loop...', 'Conductor');
-
-    try {
-        const success = await orchestrator.runCorrectionLoop(
-            'developer',
-            targetDir,
-            instruction,
-            { type: 'all', targetAgents: ['reviewer-1'] },
-            3, // 最大3回のリトライ
-            async (worktreePath: string) => {
-                const originalCwd = process.cwd();
-                try {
-                    process.chdir(worktreePath);
-                    const result = await validateCode(worktreePath);
-                    if (!result.passed) {
-                        return [{
-                            level: 'error',
-                            description: '機械的検証 (Gatekeeper) でエラーが発生しました。コードを修正してください。',
-                            suggestedFix: result.error
-                        }] as Issue[];
-                    }
-                    return [];
-                } finally {
-                    process.chdir(originalCwd);
-                }
-            },
-            () => Logger.pollIntervention()
-        );
-
-        if (success) {
-            Logger.log('Execution & QC completed successfully! Merging changes...', 'Conductor');
-            await worktreeMgr.saveAndCleanup(targetDir, `feat: Implement task ${taskName}`);
-            Logger.log('Changes saved and environment cleaned up.', 'Conductor');
-            updateSession('completed', 'execute', process.cwd(), 'execute', taskForResume);
-        } else {
-            Logger.log('Max retries reached or unresolvable reviews. Aborting changes.', 'error');
-            await worktreeMgr.abortAndCleanup(targetDir);
-            updateSession('failed', 'execute', process.cwd(), 'execute', taskForResume);
-            throw new Error('Task implementation failed validation.');
-        }
-    } catch (error: unknown) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        Logger.log(`⚠️ Orchestration Interrupted: ${errorMessage}`, 'warning');
-        Logger.log(`[Safety] Preserving worktree at: ${targetDir}`, 'system');
-        Logger.log(`You can inspect or continue the work manually in that directory.`, 'system');
-
-        try {
-            updateSession('failed', 'execute', process.cwd(), 'execute', taskForResume);
-        } catch (_) { }
-
-        throw error;
-    }
+    const service = new OrchestrationService((msg, agent, meta) => Logger.log(msg, agent, meta));
+    await service.runExecute(taskName, taskForResume, sessionId);
 }
-
-async function validateCode(cwd: string = process.cwd()): Promise<{ passed: boolean; error?: string }> {
-    Logger.log('Running Dynamic Validation...', 'Conductor');
-
-    // Switch process.cwd for listProjectFiles() workaround
-    const originalCwd = process.cwd();
-    let files: string[] = [];
-    try {
-        process.chdir(cwd);
-        files = await listProjectFiles();
-    } finally {
-        process.chdir(originalCwd);
-    }
-
-    // Prepare prompt for validation commands
-    const promptPath = path.join(__dirname, 'prompts/validate-project.txt');
-    if (!fs.existsSync(promptPath)) {
-        // Fallback if prompt is missing: Default to simple static check
-        Logger.log('⚠️ validate-project.txt not found. Falling back to simple check.', 'warning');
-        return { passed: true };
-    }
-
-    let promptTemplate = fs.readFileSync(promptPath, 'utf-8');
-    const prompt = promptTemplate.replace('{{FILE_LIST}}', files.join('\n'));
-
-    // Save prompt for debugging
-    const tmpPromptPath = path.join(cwd, '.kanon/tmp_validate_prompt.txt');
-    fs.mkdirSync(path.dirname(tmpPromptPath), { recursive: true });
-    fs.writeFileSync(tmpPromptPath, prompt);
-
-    let commands: string[] = [];
-    try {
-        // Ask Gemini to generate JSON list of commands
-        const cmd = `cat "${tmpPromptPath}" | gemini --yolo`;
-        const { stdout } = await execAsync(cmd);
-
-        // Extract JSON from response
-        const jsonMatch = stdout.match(/\[.*\]/s);
-        if (jsonMatch) {
-            commands = JSON.parse(jsonMatch[0]);
-        } else {
-            Logger.log('⚠️ Could not parse validation commands from Gemini.', 'warning');
-        }
-    } catch (e: any) {
-        Logger.log(`⚠️ Failed to generate validation commands: ${e.message}`, 'warning');
-    }
-
-    if (commands.length === 0) {
-        Logger.log('No specific validation commands generated. Running fallback static analysis.', 'Conductor');
-        // Fallback to static analysis as a safety net
-        return runStaticAnalysis(cwd);
-    }
-
-    Logger.log(`Executing validation commands: ${JSON.stringify(commands)}`, 'Conductor');
-
-    for (const command of commands) {
-        Logger.log(`> ${command}`, 'Conductor');
-        try {
-            await execAsync(command, { cwd });
-            Logger.log('Command passed.', 'Conductor');
-        } catch (error: any) {
-            const errorMsg = error.stdout || error.stderr || error.message;
-            Logger.log(`Validation command failed!`, 'Conductor');
-            return { passed: false, error: `Command '${command}' failed:\n${errorMsg}` };
-        }
-    }
-
-    Logger.log('All validation commands passed.', 'Conductor');
-    return { passed: true };
-}
-
-async function runStaticAnalysis(cwd: string): Promise<{ passed: boolean; error?: string }> {
-    Logger.log('Running Static Analysis (Fallback)...', 'Conductor');
-    const tsconfigDirs: string[] = [];
-
-    if (fs.existsSync(path.join(cwd, 'tsconfig.json'))) {
-        tsconfigDirs.push(cwd);
-    } else {
-        const entries = fs.readdirSync(cwd, { withFileTypes: true });
-        for (const entry of entries) {
-            if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
-                const subTsconfig = path.join(cwd, entry.name, 'tsconfig.json');
-                if (fs.existsSync(subTsconfig)) {
-                    tsconfigDirs.push(path.join(cwd, entry.name));
-                }
-            }
-        }
-    }
-
-    if (tsconfigDirs.length === 0) return { passed: true };
-
-    for (const dir of tsconfigDirs) {
-        try {
-            await execAsync('npx tsc --noEmit', { cwd: dir });
-        } catch (error: any) {
-            const execErr = error as any;
-            const errorMsg = execErr?.stdout || execErr?.stderr || execErr?.message || String(error);
-            return { passed: false, error: errorMsg };
-        }
-    }
-    return { passed: true };
-}
-
-
 
 async function runResume(_args: string[]) {
     Logger.log('Checking for interrupted session...', 'Conductor');
@@ -1156,192 +987,17 @@ function getArg(args: string[], name: string): string | undefined {
 /**
  * Score に基づいた自律実行。
  */
-async function runScore(_args: string[]) {
-    Logger.log('🎼 Starting Score Execution (Passage Flow)...', 'Conductor');
-
-    const scorePath = path.join(process.cwd(), 'score.json');
-    if (!fs.existsSync(scorePath)) {
-        throw new Error('score.json not found in current directory.');
-    }
-
-    const score: Score = JSON.parse(fs.readFileSync(scorePath, 'utf-8'));
-    const ruleEngine = new RuleEngine();
-    const watchdog = new LoopWatchdog();
-    const consensusService = new ConsensusService();
-    const executor = new ScoreExecutor(score, ruleEngine, watchdog);
-
-    // ワークツリー管理の初期化
-    const sandbox = new LocalGitSandbox(process.cwd());
-    const worktreeOrchestrator = new WorktreeOrchestrator(sandbox);
-    
-    Logger.log(`🏗️  Setting up automatic worktree for score: ${score.name}...`, 'Conductor');
-    const worktreePath = await worktreeOrchestrator.setup(score.name);
-    Logger.log(`✅ Sandbox ready at: ${worktreePath}`, 'Conductor');
-
-    const sessionId = `score-${Date.now()}`;
-    Logger.setCurrentSessionId(sessionId);
-
-    // Score 実行ループ
-    let isStalled = false;
-    let isSuccess = false;
-    try {
-        while (true) {
-            const passage = executor.getCurrentPassage();
-            Logger.log(`🎵 Current Passage: ${passage.displayName} (${passage.name})`, 'Conductor');
-
-            let finalOutput = '';
-
-            if (passage.skills && passage.skills.length > 0) {
-                // 並列実行モード
-                let currentSkills = [...passage.skills];
-                let deliberationContext: AgentOutput[] = [];
-                const MAX_DELIBERATIONS = 2;
-
-                for (let round = 0; round <= MAX_DELIBERATIONS; round++) {
-                    if (round > 0) {
-                        Logger.log(`🔄 Round ${round + 1}: Deliberating with feedback...`, 'Conductor');
-                    } else {
-                        Logger.log(`👥 Parallel Execution: ${currentSkills.join(', ')}`, 'Conductor');
-                    }
-                    
-                    const parallelRunner = new ParallelRunner((skill) => {
-                        const overridePrompt = deliberationContext.length > 0 
-                            ? consensusService.buildDeliberationFeedback(skill, deliberationContext)
-                            : undefined;
-                        // ワークツリーのパスを渡す
-                        return runPassage(passage, sessionId, skill, overridePrompt, worktreePath);
-                    });
-
-                    const outputs = await parallelRunner.run(currentSkills);
-                    deliberationContext = currentSkills.map((skill, i) => ({
-                        skill,
-                        output: outputs[i]
-                    }));
-
-                    // Supervisor による合議
-                    Logger.log('⚖️ Deliberating consensus...', 'Conductor');
-                    const supervisorPrompt = consensusService.buildSupervisorPrompt(deliberationContext);
-                    
-                    finalOutput = await runPassage({
-                        name: 'supervisor_decision',
-                        displayName: 'Decide next step based on consensus',
-                        skill: 'reviewer'
-                    }, sessionId, 'supervisor', supervisorPrompt, worktreePath);
-
-                    // 判定結果を確認
-                    const parsedResult = ruleEngine.determineNextPassage(finalOutput);
-                    const nextPassageName = parsedResult ? parsedResult : null;
-
-                    if (nextPassageName !== 'deliberate' || round === MAX_DELIBERATIONS) {
-                        break; // 結論が出たか、最大回数に達した
-                    }
-                }
-
-            } else {
-                // 通常の単一実行モード（ワークツリーのパスを渡す）
-                finalOutput = await runPassage(passage, sessionId, undefined, undefined, worktreePath);
-            }
-            
-            const { nextPassageName, stalled } = executor.processOutput(finalOutput);
-            
-            if (stalled) {
-                Logger.log('🛑 Loop detected. Execution stalled.', 'error');
-                isStalled = true;
-                break;
-            }
-
-            if (!nextPassageName) {
-                Logger.log('🏁 No more passages. Score completed successfully.', 'Conductor');
-                isSuccess = true;
-                break;
-            }
-
-            Logger.log(`➡️ Transitioning to: ${nextPassageName}`, 'Conductor');
-        }
-    } catch (error) {
-        Logger.log(`❌ Error during score execution: ${error}`, 'error');
-        throw error;
-    } finally {
-        // 自動マージとクリーンアップ
-        Logger.log(`🧹 Finalizing worktree (Success: ${isSuccess})...`, 'Conductor');
-        await worktreeOrchestrator.finalize(worktreePath, isSuccess);
-        Logger.log('✨ Cleaned up and merged back to main.', 'Conductor');
-    }
-
-    if (isStalled) {
-        throw new Error('Score execution stalled due to repetitive outputs.');
-    }
+async function runScore(args: string[], resumeSession?: SessionInfo) {
+    const service = new OrchestrationService((msg, agent, meta) => Logger.log(msg, agent, meta));
+    await service.runScore(args, resumeSession);
 }
 
 /**
  * 単一の Passage をエージェントで実行し、出力を返す。
  */
 async function runPassage(passage: Passage, sessionId: string, overrideSkill?: string, overridePrompt?: string, worktreePath?: string): Promise<string> {
-    const config = loadConfig();
-    const targetSkill = overrideSkill || passage.skill;
-    const { cliName, definition } = resolveCli(targetSkill, config);
-    const model = config.agents[targetSkill]?.model_primary;
-    const workspace = worktreePath || process.cwd();
-    
-    // Faceted Prompting の準備
-    const facetsDir = path.join(process.cwd(), 'facets');
-    const assembler = new PromptAssembler(facetsDir);
-    
-    const blueprint = {
-        persona: passage.persona,
-        policies: passage.policies,
-        knowledge: passage.knowledge,
-        instruction: overridePrompt || `
-# Objective
-${passage.displayName}
-
-# Context
-- Current Passage: ${passage.name}
-
-# Output Requirement
-After completing your task, you MUST output your next step in the following format at the end of your response:
-
-\`\`\`json:passage-result
-{
-  "next_passage": "NAME_OF_NEXT_PASSAGE",
-  "reason": "Brief explanation of why this passage was chosen"
-}
-\`\`\`
-
-If this is the final step, set "next_passage" to null.
-`
-    };
-
-    const prompt = await assembler.assemble(blueprint);
-    const command = buildCommandArgs(definition, prompt, { autoApprove: true, outputFormat: true, model });
-
-    Logger.log(`Executing ${targetSkill} for ${passage.name} in ${workspace}...`, 'Conductor');
-
-    return new Promise<string>((resolve, reject) => {
-        spawnAgent(targetSkill, command, sessionId, cliName, workspace, (data) => {
-            Logger.log(data, targetSkill);
-        });
-
-        const poll = setInterval(() => {
-            const status = getAgentStatus(sessionId, targetSkill);
-            if (status && status.status !== 'running') {
-                clearInterval(poll);
-                if (status.exitCode === 0) {
-                    // 出力（JSON response 等を含む）を返す
-                    let content = status.stdout || '';
-                    try {
-                        const parsed = JSON.parse(content);
-                        if (parsed && parsed.response) {
-                            content = parsed.response;
-                        }
-                    } catch (e) {}
-                    resolve(content);
-                } else {
-                    reject(new Error(`${targetSkill} failed with exit code ${status.exitCode}`));
-                }
-            }
-        }, 1000);
-    });
+    const service = new OrchestrationService((msg, agent, meta) => Logger.log(msg, agent, meta));
+    return service.runPassage(passage, sessionId, overrideSkill, overridePrompt, worktreePath);
 }
 
 // Executed directly

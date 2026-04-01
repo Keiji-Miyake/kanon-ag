@@ -27,7 +27,9 @@ export class OutputValidator {
             const parsedData = JSON.parse(jsonContent);
             
             // TODO: JSON Schema検証 (ajv等の導入が必要)
-            // 現状はパース成功のみを確認
+            if (schema) {
+                // Placeholder for schema validation logic
+            }
             
             return {
                 isValid: true,

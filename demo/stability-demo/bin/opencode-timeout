@@ -1,0 +1,2 @@
+#!/bin/bash
+echo "{\"response\": \"Step 2 completed successfully from resume!\"}"

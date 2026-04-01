@@ -1,0 +1,17 @@
+{
+  "initializedAt": "2026-03-06T05:55:23.900Z",
+  "agents": {
+    "architect": {
+      "command": "gemini",
+      "model": "gemini-3-flash-preview"
+    },
+    "developer": {
+      "command": "opencode",
+      "model": "github-copilot/claude-opus-4.6"
+    },
+    "reviewer": {
+      "command": "copilot",
+      "model": "gpt-5.3-codex"
+    }
+  }
+}

@@ -21,22 +21,7 @@ export interface Knowledge {
     relatedFiles?: string[];
 }
 
-export interface OutputContract {
-    format: 'json' | 'markdown' | 'text' | 'diff' | string;
-    schema?: any; // 該当する場合はJSON Schema
-    example?: string;
-}
-
-export interface FacetedPrompt {
-    persona: Persona;
-    policy: Policy;
-    instruction: Instruction;
-    knowledge: Knowledge;
-    outputContract: OutputContract;
-}
-
-// 追加分
-export type OutputFormat = 'json' | 'markdown' | 'text';
+export type OutputFormat = 'json' | 'markdown' | 'text' | 'diff' | string;
 
 export interface OutputContract {
     format: OutputFormat;
@@ -48,6 +33,14 @@ export interface ValidationResult {
     isValid: boolean;
     errors: string[];
     parsedData?: unknown; // パースに成功したJSONデータ等
+}
+
+export interface FacetedPrompt {
+    persona: Persona;
+    policy: Policy;
+    instruction: Instruction;
+    knowledge: Knowledge;
+    outputContract: OutputContract;
 }
 
 export type FacetType = 'persona' | 'policy' | 'knowledge' | 'instruction';

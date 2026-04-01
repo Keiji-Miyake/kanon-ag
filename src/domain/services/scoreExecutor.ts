@@ -19,6 +19,13 @@ export class ScoreExecutor {
         return this.currentPassage;
     }
 
+    /**
+     * 指定した Passage まで状態をスキップする（レジューム用）。
+     */
+    public skipToPassage(passageName: string): void {
+        this.currentPassage = this.getPassage(passageName);
+    }
+
     public processOutput(output: string): { nextPassageName: string | null; stalled: boolean } {
         // 1. Check for stall
         if (this.watchdog.isStalled(output)) {

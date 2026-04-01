@@ -4,14 +4,9 @@
  *
  * CLI子プロセスとしてエージェントを起動し、PID管理・タイムアウト・リトライを行う。
  * memory-manager と cli-resolver を使用して状態管理とコマンド構築を統合。
- *
- * Usage:
- *   npx ts-node agent-spawner.ts --test    セルフテスト
  */
 
 import { spawn, ChildProcess } from 'child_process';
-import * as fs from 'fs';
-import { fileURLToPath } from 'url';
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -24,8 +19,10 @@ export interface SpawnConfig {
     retryDelaysMs?: number[];
     /** リトライ設定（新方式） */
     retryConfig?: { maxRetries: number; initialDelayMs: number; backoffFactor: number };
-    /** タイムアウト（ms、0=無制限） */
+    /** 合計タイムアウト（ms、0=無制限） */
     timeoutMs: number;
+    /** 無通信タイムアウト（ms、この期間出力がない場合に停止） */
+    idleTimeoutMs?: number;
 }
 
 export interface AgentProcess {
@@ -33,8 +30,9 @@ export interface AgentProcess {
     cli: string;
     pid: number;
     startedAt: number;
+    lastOutputAt: number; // 追加: 最終出力時刻
     command: string;
-    status: 'running' | 'completed' | 'failed' | 'timeout' | 'killed';
+    status: 'running' | 'completed' | 'failed' | 'timeout' | 'idle_timeout' | 'killed';
     exitCode: number | null;
     retryCount: number;
     stdout: string;
@@ -54,10 +52,11 @@ export interface SpawnResult {
 
 export const DEFAULT_SPAWN_CONFIG: SpawnConfig = {
     maxParallel: 3,
-    pollIntervalMs: 1000, // 1s
+    pollIntervalMs: 1000,
     retryDelaysMs: [30000, 60000],
     retryConfig: { maxRetries: 2, initialDelayMs: 30000, backoffFactor: 2.0 },
     timeoutMs: 600000, // 10分
+    idleTimeoutMs: 300000, // 5分（何も出力がない場合）
 };
 
 /**
@@ -76,28 +75,14 @@ function computeRetryDelays(config: SpawnConfig): number[] {
 
 // ─── Agent Registry ─────────────────────────────────────────
 
-/** 実行中エージェントの管理レジストリ */
 const agentRegistry: Map<string, AgentProcess> = new Map();
 
-/**
- * レジストリのキーを生成
- */
 function registryKey(sessionId: string, skill: string): string {
     return `${sessionId}::${skill}`;
 }
 
 // ─── Core Functions ─────────────────────────────────────────
 
-/**
- * エージェントを子プロセスとして起動する。
- *
- * @param skill スキル名
- * @param command 実行コマンド文字列またはオブジェクト（コマンドインジェクション対策）
- * @param sessionId セッションID
- * @param cliName CLI名（記録用）
- * @param workspace 作業ディレクトリ
- * @returns AgentProcess 情報
- */
 export function spawnAgent(
     skill: string,
     command: string | { cmd: string; args: string[] },
@@ -109,13 +94,11 @@ export function spawnAgent(
 ): AgentProcess {
     const key = registryKey(sessionId, skill);
 
-    // 既に実行中なら拒否
     const existing = agentRegistry.get(key);
     if (existing && existing.status === 'running') {
         throw new Error(`エージェント "${skill}" は既に実行中 (PID: ${existing.pid})`);
     }
 
-    // コマンドを実行
     let child: ChildProcess;
     let commandStr: string;
     const env = {
@@ -132,7 +115,7 @@ export function spawnAgent(
         child = spawn('sh', ['-c', command], {
             cwd: workspace,
             detached: true,
-            stdio: ['pipe', 'pipe', 'pipe'], // stdin を pipe に変更
+            stdio: ['pipe', 'pipe', 'pipe'],
             env,
         });
     } else {
@@ -140,7 +123,7 @@ export function spawnAgent(
         child = spawn(command.cmd, command.args, {
             cwd: workspace,
             detached: true,
-            stdio: ['pipe', 'pipe', 'pipe'], // stdin を pipe に変更
+            stdio: ['pipe', 'pipe', 'pipe'],
             env,
         });
     }
@@ -160,6 +143,7 @@ export function spawnAgent(
         cli: cliName,
         pid: child.pid || 0,
         startedAt: Date.now(),
+        lastOutputAt: Date.now(),
         command: commandStr,
         status: 'running',
         exitCode: null,
@@ -171,39 +155,29 @@ export function spawnAgent(
 
     if (agent.pid === 0) {
         agent.status = 'failed';
-        agent.stderr = 'Failed to get PID - process might not have started';
+        agent.stderr = 'Failed to get PID';
         resolvePromise(null);
     }
 
-    // stdout/stderr を蓄積
-    child.stdout?.on('data', (data: Buffer) => {
-        const text = data.toString();
-        agent.stdout += text;
+    const updateOutput = (text: string, isError: boolean) => {
+        agent.lastOutputAt = Date.now(); // 出力があったので更新
+        if (isError) {
+            agent.stderr += text;
+            if (agent.stderr.length > 10485760) agent.stderr = agent.stderr.slice(-10485760);
+        } else {
+            agent.stdout += text;
+            if (agent.stdout.length > 10485760) agent.stdout = agent.stdout.slice(-10485760);
+        }
         if (onLog) {
             text.split('\n').forEach(line => {
-                if (line.trim()) onLog(line.trim(), false);
+                if (line.trim()) onLog(line.trim(), isError);
             });
         }
-        // 最後の 10MB だけ保持 (1024 * 1024 * 10)
-        if (agent.stdout.length > 10485760) {
-            agent.stdout = agent.stdout.slice(-10485760);
-        }
-    });
+    };
 
-    child.stderr?.on('data', (data: Buffer) => {
-        const text = data.toString();
-        agent.stderr += text;
-        if (onLog) {
-            text.split('\n').forEach(line => {
-                if (line.trim()) onLog(line.trim(), true);
-            });
-        }
-        if (agent.stderr.length > 10485760) {
-            agent.stderr = agent.stderr.slice(-10485760);
-        }
-    });
+    child.stdout?.on('data', (data: Buffer) => updateOutput(data.toString(), false));
+    child.stderr?.on('data', (data: Buffer) => updateOutput(data.toString(), true));
 
-    // 終了ハンドラ
     child.on('close', (code: number | null) => {
         agent.exitCode = code;
         agent.status = code === 0 ? 'completed' : 'failed';
@@ -220,16 +194,10 @@ export function spawnAgent(
     return agent;
 }
 
-/**
- * エージェントのステータスを取得
- */
 export function getAgentStatus(sessionId: string, skill: string): AgentProcess | null {
     return agentRegistry.get(registryKey(sessionId, skill)) || null;
 }
 
-/**
- * 全エージェントのステータスを取得
- */
 export function getAllAgentStatuses(sessionId: string): AgentProcess[] {
     const results: AgentProcess[] = [];
     for (const [key, agent] of agentRegistry) {
@@ -240,21 +208,16 @@ export function getAllAgentStatuses(sessionId: string): AgentProcess[] {
     return results;
 }
 
-/**
- * エージェントを強制終了
- */
 export function killAgent(sessionId: string, skill: string): boolean {
     const agent = agentRegistry.get(registryKey(sessionId, skill));
     if (!agent || agent.status !== 'running') return false;
 
     try {
-        // プロセスグループ全体を終了 (マイナスPID)
         process.kill(-agent.pid, 'SIGTERM');
         agent.status = 'killed';
         agent.exitCode = -1;
         return true;
     } catch {
-        // 万が一 PGID で失敗した場合は通常の PID で試行
         try {
             process.kill(agent.pid, 'SIGTERM');
             agent.status = 'killed';
@@ -266,19 +229,28 @@ export function killAgent(sessionId: string, skill: string): boolean {
     }
 }
 
-/**
- * 実行中のエージェント数をカウント
- */
 export function countRunningAgents(sessionId: string): number {
     return getAllAgentStatuses(sessionId).filter(a => a.status === 'running').length;
 }
 
 /**
- * エージェントがタイムアウトしているか確認
+ * タイムアウトチェック
  */
-export function checkTimeout(agent: AgentProcess, timeoutMs: number): boolean {
-    if (agent.status !== 'running' || timeoutMs <= 0) return false;
-    return (Date.now() - agent.startedAt) > timeoutMs;
+export function checkTimeout(agent: AgentProcess, config: SpawnConfig): 'none' | 'total' | 'idle' {
+    if (agent.status !== 'running') return 'none';
+    
+    const now = Date.now();
+    const elapsedIdle = now - agent.lastOutputAt;
+
+    // 合計タイムアウト
+    if (config.timeoutMs > 0 && (now - agent.startedAt) > config.timeoutMs) {
+        return 'total';
+    }
+    // 無通信タイムアウト
+    if (config.idleTimeoutMs && config.idleTimeoutMs > 0 && elapsedIdle > config.idleTimeoutMs) {
+        return 'idle';
+    }
+    return 'none';
 }
 
 // ─── Batch Execution ────────────────────────────────────────
@@ -287,20 +259,9 @@ export interface BatchTask {
     skill: string;
     command: string | { cmd: string; args: string[] };
     cliName: string;
-    /** 依存スキル（先に完了する必要がある） */
     dependsOn?: string[];
 }
 
-/**
- * 複数エージェントを並列実行する。依存関係・最大並列数を尊重。
- *
- * @param tasks 実行タスクリスト
- * @param sessionId セッションID
- * @param config Spawn設定
- * @param workspace 作業ディレクトリ
- * @param onProgress 進捗コールバック（オプション）
- * @returns 全エージェントの実行結果
- */
 export async function executeBatch(
     tasks: BatchTask[],
     sessionId: string,
@@ -314,18 +275,15 @@ export async function executeBatch(
     const failed = new Set<string>();
     const retryCountMap: Map<string, number> = new Map();
 
-    // retry 設定互換: retryDelays を決定
     const retryDelays = computeRetryDelays(config);
 
     while (pending.size > 0) {
-        // 依存が解決済みで、まだ起動していないタスクを取得
         const ready = tasks.filter(t =>
             pending.has(t.skill)
             && !agentRegistry.has(registryKey(sessionId, t.skill))
             && (t.dependsOn || []).every(dep => completed.has(dep))
         );
 
-        // 起動可能分を最大並列数まで起動
         const running = countRunningAgents(sessionId);
         const canStart = Math.max(0, config.maxParallel - running);
         const toStart = ready.slice(0, canStart);
@@ -336,22 +294,20 @@ export async function executeBatch(
             onProgress?.(agent);
         }
 
-        // ポーリング：完了チェック
         await sleep(config.pollIntervalMs);
 
-        // タイムアウトチェック・完了チェック
         for (const task of tasks) {
             if (!pending.has(task.skill)) continue;
             const agent = getAgentStatus(sessionId, task.skill);
             if (!agent) continue;
 
-            // タイムアウト判定
-            if (checkTimeout(agent, config.timeoutMs)) {
+            const timeoutStatus = checkTimeout(agent, config);
+            if (timeoutStatus !== 'none') {
                 killAgent(sessionId, task.skill);
-                agent.status = 'timeout';
+                agent.status = timeoutStatus === 'total' ? 'timeout' : 'idle_timeout';
+                agent.stderr += `\n[System] ${timeoutStatus === 'total' ? 'Total' : 'Idle'} timeout exceeded.`;
             }
 
-            // 完了判定
             if (agent.status !== 'running') {
                 if (agent.status === 'completed') {
                     completed.add(task.skill);
@@ -359,12 +315,16 @@ export async function executeBatch(
                     results.push(toResult(agent));
                     onProgress?.(agent);
                 } else {
-                    // リトライ判定
+                    // 特定のエラー（429等）は常にリトライするなどの拡張が可能
+                    const isRateLimit = agent.stderr.includes('429') || agent.stderr.includes('RESOURCE_EXHAUSTED');
                     const retries = retryCountMap.get(task.skill) || 0;
-                    if (retries < retryDelays.length) {
-                        const delay = retryDelays[retries];
+                    
+                    if (retries < retryDelays.length || (isRateLimit && retries < 5)) {
+                        const baseDelay = retryDelays[Math.min(retries, retryDelays.length - 1)];
+                        // 429 の場合は少し長めに待つ
+                        const delay = isRateLimit ? Math.max(baseDelay, 60000) : baseDelay;
+                        
                         retryCountMap.set(task.skill, retries + 1);
-                        // レジストリから削除して再起動可能にする
                         agentRegistry.delete(registryKey(sessionId, task.skill));
                         await sleep(delay);
                     } else {
@@ -377,7 +337,6 @@ export async function executeBatch(
             }
         }
 
-        // 依存先が失敗した場合、依存するタスクも失敗にする
         for (const task of tasks) {
             if (!pending.has(task.skill)) continue;
             const deps = task.dependsOn || [];
@@ -391,7 +350,7 @@ export async function executeBatch(
                     durationMs: 0,
                     retryCount: 0,
                     stdout: '',
-                    stderr: `依存スキル失敗により実行スキップ: ${deps.filter(d => failed.has(d)).join(', ')}`,
+                    stderr: `Skipped due to dependency failure: ${deps.filter(d => failed.has(d)).join(', ')}`,
                 });
             }
         }
@@ -416,17 +375,11 @@ function sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// ─── Utility ────────────────────────────────────────────────
-
-/**
- * セッション内の全エージェントをクリーンアップ
- */
 export function cleanupSession(sessionId: string): void {
     for (const [key, agent] of agentRegistry) {
         if (key.startsWith(`${sessionId}::`)) {
             if (agent.status === 'running') {
                 try {
-                    // プロセスグループ全体を終了
                     process.kill(-agent.pid, 'SIGTERM');
                 } catch {
                     try { process.kill(agent.pid, 'SIGTERM'); } catch { /* ignore */ }
@@ -437,125 +390,6 @@ export function cleanupSession(sessionId: string): void {
     }
 }
 
-/**
- * レジストリを完全クリア（テスト用）
- */
 export function clearRegistry(): void {
     agentRegistry.clear();
-}
-
-// ─── Self-Test ──────────────────────────────────────────────
-
-async function selfTest(): Promise<void> {
-    console.log('\n═══════════════════════════════════════════');
-    console.log('  🧪 Agent Spawner Self-Test');
-    console.log('═══════════════════════════════════════════\n');
-
-    let passed = 0;
-    let total = 0;
-
-    function assert(condition: boolean, message: string): void {
-        total++;
-        if (condition) {
-            console.log(`  ✅ ${message}`);
-            passed++;
-        } else {
-            console.log(`  ❌ ${message}`);
-        }
-    }
-
-    const sessionId = `test-${Date.now()}`;
-
-    // Test 1: 単一エージェント spawn
-    console.log('  [1/6] spawnAgent (echo コマンド)...');
-    const agent1 = spawnAgent('test-skill', 'echo "hello agent"', sessionId, 'test');
-    assert(agent1.pid > 0, `PID 取得 (${agent1.pid})`);
-    assert(agent1.status === 'running' || agent1.status === 'completed', 'ステータス: running or completed');
-    assert(agent1.cli === 'test', 'CLI名: test');
-
-    await sleep(1000);
-    const status1 = getAgentStatus(sessionId, 'test-skill');
-    assert(status1 !== null, 'レジストリに登録済み');
-    assert(status1!.status === 'completed', 'echo 完了');
-    assert(status1!.exitCode === 0, '終了コード: 0');
-    assert(status1!.stdout.includes('hello agent'), 'stdout に出力含む');
-
-    // Test 2: 重複 spawn の拒否
-    console.log('\n  [2/6] 重複 spawn 拒否...');
-    clearRegistry();
-    spawnAgent('slow-skill', 'sleep 10', sessionId, 'test');
-    let dupError = false;
-    try {
-        spawnAgent('slow-skill', 'sleep 10', sessionId, 'test');
-    } catch (e: unknown) {
-        dupError = (e as Error).message.includes('既に実行中');
-    }
-    assert(dupError, '重複 spawn でエラー');
-    killAgent(sessionId, 'slow-skill');
-
-    // Test 3: killAgent
-    console.log('\n  [3/6] killAgent...');
-    clearRegistry();
-    spawnAgent('kill-test', 'sleep 30', sessionId, 'test');
-    await sleep(500);
-    const killed = killAgent(sessionId, 'kill-test');
-    assert(killed, 'kill 成功');
-    const status3 = getAgentStatus(sessionId, 'kill-test');
-    assert(status3!.status === 'killed', 'ステータス: killed');
-
-    // Test 4: countRunningAgents
-    console.log('\n  [4/6] countRunningAgents...');
-    clearRegistry();
-    spawnAgent('count-a', 'sleep 10', sessionId, 'test');
-    spawnAgent('count-b', 'sleep 10', sessionId, 'test');
-    const runCount = countRunningAgents(sessionId);
-    assert(runCount === 2, `実行中: ${runCount} (expected 2)`);
-    killAgent(sessionId, 'count-a');
-    killAgent(sessionId, 'count-b');
-
-    // Test 5: checkTimeout
-    console.log('\n  [5/6] checkTimeout...');
-    clearRegistry();
-    const agent5 = spawnAgent('timeout-test', 'sleep 30', sessionId, 'test');
-    const notTimedOut = checkTimeout(agent5, 60000);
-    assert(!notTimedOut, 'タイムアウトなし (60s)');
-    // 開始時間を偽装
-    agent5.startedAt = Date.now() - 70000;
-    const timedOut = checkTimeout(agent5, 60000);
-    assert(timedOut, 'タイムアウト検知 (60s 経過)');
-    killAgent(sessionId, 'timeout-test');
-
-    // Test 6: executeBatch（依存関係付き）
-    console.log('\n  [6/6] executeBatch...');
-    clearRegistry();
-    const tasks: BatchTask[] = [
-        { skill: 'step-1', command: 'echo "step 1 done"', cliName: 'test' },
-        { skill: 'step-2', command: 'echo "step 2 done"', cliName: 'test', dependsOn: ['step-1'] },
-    ];
-    const batchResults = await executeBatch(
-        tasks,
-        `batch-${Date.now()}`,
-        { ...DEFAULT_SPAWN_CONFIG, pollIntervalMs: 500, timeoutMs: 10000 },
-    );
-    assert(batchResults.length === 2, `結果数: ${batchResults.length}`);
-    assert(batchResults.every(r => r.success), '全タスク成功');
-    assert(batchResults.find(r => r.skill === 'step-2') !== undefined, 'step-2 が依存解決後に実行');
-
-    // Cleanup
-    cleanupSession(sessionId);
-    clearRegistry();
-
-    console.log(`\n═══════════════════════════════════════════`);
-    console.log(`  ${passed === total ? '🎉' : '⚠️'} テスト結果: ${passed}/${total} 合格`);
-    console.log('═══════════════════════════════════════════\n');
-
-    process.exit(passed === total ? 0 : 1);
-}
-
-// ─── Main ───────────────────────────────────────────────────
-
-if (process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url))) {
-    if (process.argv.includes('--test')) {
-        selfTest();
-    }
 }

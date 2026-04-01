@@ -57,6 +57,7 @@ export interface CliConfig {
     // kanon-cli.json / .kanon/config.json 拡張フィールド
     worktreeDir?: string;   // worktree 配置パス（デフォルト: "worktree"）
     maxRetries?: number;    // 自律デバッグ最大リトライ回数（デフォルト: 3）
+    idleTimeoutMs?: number; // 無通信タイムアウト（ms）
 }
 
 export interface BuildCommandOptions {
@@ -185,12 +186,12 @@ export function ensureConfig(cwd: string): void {
         agents: {
             architect: {
                 command: 'gemini',
-                model: 'gemini-3.1-pro-preview',
+                model: 'gemini-3-flash-preview',
                 model_backups: ['gemini-2.5-pro', 'gemini-3-flash-preview']
             },
             reviewer: {
                 command: 'gemini',
-                model: 'gemini-3.1-pro-preview',
+                model: 'gemini-3-flash-preview',
                 model_backups: ['gemini-2.5-pro', 'gemini-3-flash-preview'],
                 cli_backup: 'copilot',
                 cli_backup_model: 'claude-opus-4.6'
@@ -447,17 +448,17 @@ function getDefaultConfig(): CliConfig {
         topology: 'star',
         commander: {
             identity: 'Antigravity',
-            brain: 'gemini-3.1-pro-preview'
+            brain: 'gemini-3-flash-preview'
         },
         agents: {
             architect: {
                 cli: 'gemini',
-                model_primary: 'gemini-3.1-pro-preview',
+                model_primary: 'gemini-3-flash-preview',
                 model_backups: ['gemini-2.5-pro', 'gemini-3-flash-preview']
             },
             reviewer: {
                 cli: 'gemini',
-                model_primary: 'gemini-3.1-pro-preview',
+                model_primary: 'gemini-3-flash-preview',
                 model_backups: ['gemini-2.5-pro', 'gemini-3-flash-preview'],
                 cli_backup: 'copilot',
                 cli_backup_model: 'claude-opus-4.6'
