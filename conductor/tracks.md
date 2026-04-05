@@ -6,8 +6,11 @@
 
 ---
 
-- [ ] **Track: 上記の内容を整理して、Kanonをよりよくするためのロードマップを作成してください。**
+- [x] **Track: 上記の内容を整理して、Kanonをよりよくするためのロードマップを作成してください。**
 *Link: [./tracks/improvement-roadmap_20260328/](./tracks/improvement-roadmap_20260328/)*
+
+- [x] **Track: 自己改善ループ (Self-Evolution) の洗練**
+*Link: [./tracks/self-evolution_20260404/](./tracks/self-evolution_20260404/)*
 
 
 

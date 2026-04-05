@@ -1,6 +1,7 @@
 export interface AgentOutput {
     skill: string;
     output: string;
+    consensusReached?: boolean;
 }
 
 export class ConsensusService {

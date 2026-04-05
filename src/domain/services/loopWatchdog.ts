@@ -22,6 +22,11 @@ export class LoopWatchdog {
         return this.count >= this.threshold;
     }
 
+    public reset(): void {
+        this.lastHash = null;
+        this.count = 0;
+    }
+
     private computeHash(content: string): string {
         return createHash('sha256').update(content).digest('hex');
     }

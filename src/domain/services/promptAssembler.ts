@@ -39,6 +39,18 @@ export class PromptAssembler {
             sections.push(`# Instructions\n${blueprint.instruction}`);
         }
 
+        // 5. Output Contract
+        if (blueprint.outputContract) {
+            let contractMd = `# Output Requirements\n- **Format**: ${blueprint.outputContract.format}\n`;
+            if (blueprint.outputContract.schema) {
+                contractMd += `- **Schema**: \`\`\`json\n${JSON.stringify(blueprint.outputContract.schema, null, 2)}\n\`\`\`\n`;
+            }
+            if (blueprint.outputContract.example) {
+                contractMd += `- **Example**: \n${blueprint.outputContract.example}\n`;
+            }
+            sections.push(contractMd);
+        }
+
         return sections.join('\n\n---\n\n');
     }
 

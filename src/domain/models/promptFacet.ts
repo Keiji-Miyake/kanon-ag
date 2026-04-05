@@ -1,3 +1,5 @@
+import { ValidationResult as DetailedValidationResult } from './validation.js';
+
 export interface Persona {
     role: string;
     description: string;
@@ -29,6 +31,7 @@ export interface OutputContract {
     example?: string;
 }
 
+// TODO: 後で完全に `./validation.js` に移行する
 export interface ValidationResult {
     isValid: boolean;
     errors: string[];
@@ -56,4 +59,5 @@ export interface PromptBlueprint {
     policies?: string[];
     knowledge?: string[];
     instruction?: string;
+    outputContract?: OutputContract;
 }

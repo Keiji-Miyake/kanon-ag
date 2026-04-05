@@ -19,6 +19,14 @@ export class ScoreExecutor {
         return this.currentPassage;
     }
 
+    public updateScore(score: Score): void {
+        this.score = score;
+    }
+
+    public getScore(): Score {
+        return this.score;
+    }
+
     /**
      * 指定した Passage まで状態をスキップする（レジューム用）。
      */
@@ -32,10 +40,10 @@ export class ScoreExecutor {
             return { nextPassageName: null, stalled: true };
         }
 
-        // 2. Determine next passage from output JSON
-        let nextPassageName = this.ruleEngine.determineNextPassage(output);
+        // 2. Determine next passage from output JSON or passage rules
+        let nextPassageName = this.ruleEngine.determineNextPassage(output, this.currentPassage);
 
-        // 3. Fallback to fixed 'next' if no JSON result
+        // 3. Fallback to fixed 'next' if no JSON result or rule matched
         if (!nextPassageName) {
             nextPassageName = this.currentPassage.next || null;
         }

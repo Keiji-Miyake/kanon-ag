@@ -1,55 +1,11 @@
-import { OutputContract, ValidationResult } from '../models/promptFacet.js';
+import { OutputContract } from '../models/promptFacet.js';
+import { ValidationResult } from '../models/validation.js';
 
-export class OutputValidator {
+export interface IOutputValidator {
     /**
-     * エージェントの出力をContractに基づき検証する
+     * エージェントの出力を検証する
+     * @param output エージェントが出力した生テキスト
+     * @param contract 出力定義（フォーマット、スキーマ等）
      */
-    public validate(output: string, contract: OutputContract): ValidationResult {
-        switch (contract.format) {
-            case 'json':
-                return this.validateJson(output, contract.schema);
-            case 'markdown':
-                return this.validateMarkdown(output);
-            case 'text':
-                return { isValid: true, errors: [] };
-            default:
-                return { isValid: false, errors: [`Unsupported format: ${(contract as any).format}`] };
-        }
-    }
-
-    private validateJson(output: string, schema?: Record<string, unknown>): ValidationResult {
-        // 1. JSONコードブロックの抽出を試みる
-        const regex = /```json\s+([\s\S]*?)\s+```/g;
-        const match = regex.exec(output);
-        const jsonContent = match ? match[1] : output;
-
-        try {
-            const parsedData = JSON.parse(jsonContent);
-            
-            // TODO: JSON Schema検証 (ajv等の導入が必要)
-            if (schema) {
-                // Placeholder for schema validation logic
-            }
-            
-            return {
-                isValid: true,
-                errors: [],
-                parsedData
-            };
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : 'Unknown parsing error';
-            return {
-                isValid: false,
-                errors: [`Failed to parse JSON: ${errorMessage}`]
-            };
-        }
-    }
-
-    private validateMarkdown(output: string): ValidationResult {
-        // 最小限のMarkdown形式チェック（空でないこと、あるいは見出しの存在など）
-        if (!output || output.trim().length === 0) {
-            return { isValid: false, errors: ['Output is empty'] };
-        }
-        return { isValid: true, errors: [] };
-    }
+    validate(output: string, contract: OutputContract): Promise<ValidationResult>;
 }

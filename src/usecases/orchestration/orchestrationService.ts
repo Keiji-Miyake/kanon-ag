@@ -12,17 +12,22 @@ import { PromptAssembler } from '../../domain/services/promptAssembler.js';
 import { ParallelRunner } from '../../domain/services/parallelRunner.js';
 import { ConsensusService, AgentOutput } from '../../domain/services/consensusService.js';
 import { WorktreeOrchestrator } from '../../domain/services/worktreeOrchestrator.js';
-import { AIWatchdog } from '../../domain/services/aiWatchdog.js';
-import { OutputValidator } from '../../domain/services/outputValidator.js';
+import { AIWatchdog, WatchdogResult } from '../../domain/services/aiWatchdog.js';
+import { AjvOutputValidator } from '../../infrastructure/validation/ajvOutputValidator.js';
+import { ValidateAgentOutputUseCase } from './validateAgentOutputUseCase.js';
 import { LocalGitSandbox } from '../../infrastructure/git/localGitSandbox.js';
-import { SessionInfo, initSession, updateSession, readSession } from '../../cli/memory-manager.js';
+import { SessionInfo, initSession, updateSession } from '../../cli/memory-manager.js';
+import { AiJudgeClient } from '../../infrastructure/ai/aiJudgeClient.js';
+import { EvaluateTaskProgressUseCase } from './evaluateTaskProgressUseCase.js';
+import { EvaluationResult } from '../../domain/models/evaluation.js';
+import * as readline from 'readline';
 import { loadConfig, resolveCli, buildCommandArgs } from '../../cli/cli-resolver.js';
 import { spawnAgent, getAgentStatus, killAgent, checkTimeout, DEFAULT_SPAWN_CONFIG } from '../../cli/agent-spawner.js';
 
 import { WorktreeManager } from '../environment/worktreeManager.js';
 import { ReviewOrchestrator } from './reviewOrchestrator.js';
 import { CliAgentRunner } from '../../cli/agent-runner-impl.js';
-import { Instruction } from '../../domain/models/promptFacet.js';
+import { Instruction, PromptBlueprint } from '../../domain/models/promptFacet.js';
 import { Issue } from '../../domain/models/feedback.js';
 
 /**
@@ -31,9 +36,26 @@ import { Issue } from '../../domain/models/feedback.js';
  */
 export class OrchestrationService {
     private logger: (message: string, agent?: string, metadata?: any) => void;
+    private evaluateTaskProgressUseCase: EvaluateTaskProgressUseCase;
 
-    constructor(logger: (message: string, agent?: string, metadata?: any) => void) {
+    constructor(
+        logger: (message: string, agent?: string, metadata?: any) => void,
+        evaluateTaskProgressUseCase?: EvaluateTaskProgressUseCase
+    ) {
         this.logger = logger;
+        this.evaluateTaskProgressUseCase = evaluateTaskProgressUseCase || this.createDefaultEvaluateTaskProgressUseCase();
+    }
+
+    private createDefaultEvaluateTaskProgressUseCase(): EvaluateTaskProgressUseCase {
+        const aiJudgeClient = new AiJudgeClient(async (prompt: string) => {
+            return await this.runPassage({
+                name: 'ai_judge_evaluation',
+                displayName: 'AI Judge Evaluation',
+                skill: 'reviewer',
+                outputContract: { format: 'json' }
+            }, `judge-${Date.now()}`, 'supervisor', prompt);
+        });
+        return new EvaluateTaskProgressUseCase(aiJudgeClient);
     }
 
     private log(message: string, agent: string = 'kanon', metadata: any = {}) {
@@ -51,7 +73,8 @@ export class OrchestrationService {
             throw new Error('score.json not found in current directory.');
         }
 
-        const score: Score = JSON.parse(fs.readFileSync(scorePath, 'utf-8'));
+        let score: Score = JSON.parse(fs.readFileSync(scorePath, 'utf-8'));
+        const scoreContext = { name: score.name, description: score.description };
         const ruleEngine = new RuleEngine();
         const watchdog = new LoopWatchdog();
         const aiWatchdog = new AIWatchdog();
@@ -86,6 +109,8 @@ export class OrchestrationService {
 
         let isStalled = false;
         let isSuccess = false;
+        let nextFeedback: string | undefined = undefined;
+
         try {
             while (true) {
                 const passage = executor.getCurrentPassage();
@@ -104,7 +129,9 @@ export class OrchestrationService {
                             const overridePrompt = deliberationContext.length > 0 
                                 ? consensusService.buildDeliberationFeedback(skill, deliberationContext)
                                 : undefined;
-                            return this.runPassage(passage, sessionId, skill, overridePrompt, worktreePath);
+                            // Add nextFeedback to the prompt if it exists
+                            const promptWithFeedback = nextFeedback ? `${nextFeedback}\n\n${overridePrompt || ''}` : overridePrompt;
+                            return this.runPassage(passage, sessionId, skill, promptWithFeedback, worktreePath, scoreContext);
                         });
 
                         const outputs = await parallelRunner.run(passage.skills);
@@ -117,16 +144,19 @@ export class OrchestrationService {
                             name: 'supervisor_decision',
                             displayName: 'Decide next step based on consensus',
                             skill: 'reviewer'
-                        }, sessionId, 'supervisor', supervisorPrompt, worktreePath);
+                        }, sessionId, 'supervisor', supervisorPrompt, worktreePath, scoreContext);
 
                         const nextPassageName = ruleEngine.determineNextPassage(finalOutput);
                         if (nextPassageName !== 'deliberate' || round === MAX_DELIBERATIONS) break;
                     }
                 } else {
-                    finalOutput = await this.runPassage(passage, sessionId, undefined, undefined, worktreePath);
+                    finalOutput = await this.runPassage(passage, sessionId, undefined, nextFeedback, worktreePath, scoreContext);
                 }
                 
-                executionHistory.push({ skill: passage.skills?.[0] || passage.skill, output: finalOutput });
+                // Clear feedback after using it
+                nextFeedback = undefined;
+
+                executionHistory.push({ skill: passage.skills?.[0] || passage.skill, output: finalOutput, consensusReached: !!passage.skills?.length });
                 const { nextPassageName, stalled } = executor.processOutput(finalOutput);
                 
                 if (stalled && executionHistory.length >= 3) {
@@ -136,15 +166,70 @@ export class OrchestrationService {
                         name: 'ai_watchdog_assessment',
                         displayName: 'Assess progress',
                         skill: 'reviewer'
-                    }, sessionId, 'supervisor', watchdogPrompt, worktreePath);
+                    }, sessionId, 'supervisor', watchdogPrompt, worktreePath, scoreContext);
 
                     const watchdogMatch = watchdogOutput.match(/```json:watchdog-result\s+([\s\S]*?)\s+```/);
                     if (watchdogMatch) {
-                        const watchdogResult = JSON.parse(watchdogMatch[1]);
+                        const watchdogResult: WatchdogResult = JSON.parse(watchdogMatch[1]);
                         if (watchdogResult.isStalled) {
                             this.log(`🛑 AI Watchdog confirmed stall: ${watchdogResult.reason}`, 'error');
-                            isStalled = true;
-                            break;
+                            
+                            // --- AI JUDGE INTEGRATION ---
+                            this.log('⚖️ Invoking AI Judge for objective assessment...', 'Conductor');
+                            const historyContext = executionHistory.slice(-10).map((h, i) => `Iteration ${i + 1} (${h.skill}):\n${h.output}`).join('\n\n');
+                            const evaluation = await this.evaluateTaskProgressUseCase.execute(historyContext);
+
+                            if (evaluation.status === 'CONTINUE') {
+                                this.log(`✅ AI Judge decided to CONTINUE: ${evaluation.reason}`, 'Conductor');
+                                watchdog.reset();
+                                nextFeedback = `[AI Judge Hint] ${evaluation.reason}`;
+                                continue;
+                            } else if (evaluation.status === 'ABORT') {
+                                this.log(`🛑 AI Judge decided to ABORT: ${evaluation.reason}`, 'error');
+                                isStalled = true;
+                                break;
+                            } else if (evaluation.status === 'ESCALATE') {
+                                this.log(`⚠️ AI Judge requested ESCALATION: ${evaluation.summary}`, 'warning');
+
+                                if (!process.stdin.isTTY) {
+                                    this.log('🛑 Non-TTY environment detected. Cannot escalate to user. Aborting.', 'error');
+                                    isStalled = true;
+                                    break;
+                                }
+
+                                this.log('\n--- ESCALATION REQUIRED ---', 'Conductor');
+                                this.log(`Summary: ${evaluation.summary}`, 'Conductor');
+                                this.log(`Core Issue: ${evaluation.coreIssue}`, 'Conductor');
+                                if (evaluation.options) {
+                                    this.log('Options:', 'Conductor');
+                                    evaluation.options.forEach((opt, idx) => this.log(`  ${idx + 1}. ${opt}`, 'Conductor'));
+                                }
+                                this.log('---------------------------\n', 'Conductor');
+
+                                const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+                                const answer = await new Promise<string>((resolve) => {
+                                    rl.question('Please provide your feedback or instructions: ', (input) => {
+                                        rl.close();
+                                        resolve(input);
+                                    });
+                                });
+                                
+                                nextFeedback = `[User Intervention] ${answer}`;
+                                watchdog.reset();
+                                this.log('🔄 User intervention received. Resuming loop...', 'Conductor');
+                                continue;
+                            } else {
+                                // Fallback for unexpected status or legacy self-correction
+                                const correctedScore = await this.selfCorrect(executor.getScore(), watchdogResult, sessionId, worktreePath);
+                                if (correctedScore) {
+                                    score = correctedScore;
+                                    executor.updateScore(score);
+                                    this.log('✅ Score auto-corrected. Resuming...', 'Conductor');
+                                    continue;
+                                }
+                                isStalled = true;
+                                break;
+                            }
                         }
                     } else {
                         isStalled = true;
@@ -171,9 +256,12 @@ export class OrchestrationService {
                 await worktreeOrchestrator.finalize(worktreePath, isSuccess);
                 this.log('✨ Cleaned up and merged back to main.', 'Conductor');
                 updateSession(isSuccess ? 'completed' : 'failed', isSuccess ? 'done' : 'stalled', process.cwd());
+                if (isSuccess) {
+                    await this.reflect(executionHistory);
+                }
             } else {
                 this.log(`⚠️ Preserving worktree due to interruption: ${worktreePath}`, 'warning');
-                updateSession('failed', 'interrupted', process.cwd(), 'score', score.name, executor.getCurrentPassage().name, worktreePath);
+                updateSession('failed', 'interrupted', process.cwd(), 'score', executor.getScore().name, executor.getCurrentPassage().name, worktreePath);
             }
         }
 
@@ -183,30 +271,35 @@ export class OrchestrationService {
     /**
      * 単一の Passage を実行し、バリデーションとリトライを行う。
      */
-    public async runPassage(passage: Passage, sessionId: string, overrideSkill?: string, overridePrompt?: string, worktreePath?: string): Promise<string> {
+    public async runPassage(passage: Passage, sessionId: string, overrideSkill?: string, overridePrompt?: string, worktreePath?: string, scoreContext?: { name: string, description: string }): Promise<string> {
         const workspace = worktreePath || process.cwd();
         const config = loadConfig(path.join(workspace, '.kanon', 'config.json'));
         const spawnConfig = {
             ...DEFAULT_SPAWN_CONFIG,
-            idleTimeoutMs: config.idleTimeoutMs || DEFAULT_SPAWN_CONFIG.idleTimeoutMs
+            idleTimeoutMs: 600000, // 10分 (エージェントの起動が遅い場合があるため)
+            timeoutMs: 1200000 // 合計20分
         };
         const targetSkill = overrideSkill || passage.skill;
         const { cliName, definition } = resolveCli(targetSkill, config);
         const model = config.agents[targetSkill]?.model_primary;
         
         const assembler = new PromptAssembler(path.join(process.cwd(), 'facets'));
-        const validator = new OutputValidator();
-        const MAX_RETRIES = 3;
+        const validator = new ValidateAgentOutputUseCase(new AjvOutputValidator());
+        const MAX_RETRIES = 5;
         let currentFeedback: string | undefined = undefined;
 
         for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-            const blueprint = {
+            const blueprint: PromptBlueprint = {
                 persona: passage.persona,
                 policies: passage.policies,
                 knowledge: passage.knowledge,
+                outputContract: passage.outputContract || { format: 'json' },
                 instruction: (currentFeedback ? `${currentFeedback}\n\n` : '') + (overridePrompt || `
 # Objective
 ${passage.displayName}
+# Score Context
+- Score Name: ${scoreContext?.name || 'Autonomous Loop'}
+- Score Description: ${scoreContext?.description || ''}
 # Context
 - Current Passage: ${passage.name}
 # Output Requirement
@@ -242,7 +335,7 @@ Output your next step in \`\`\`json:passage-result\`\`\` format.
                 }, 1000);
             });
 
-            const validation = validator.validate(result, passage.outputContract || { format: 'json' });
+            const validation = await validator.execute(result, passage.outputContract || { format: 'json' });
             if (validation.isValid) {
                 let content = result;
                 try {
@@ -251,11 +344,96 @@ Output your next step in \`\`\`json:passage-result\`\`\` format.
                 } catch (e) {}
                 return content;
             } else {
-                currentFeedback = `\n\n⚠️ Invalid output. Errors:\n- ${validation.errors.join('\n- ')}\nCorrect your format.`;
-                if (attempt === MAX_RETRIES) throw new Error(`${targetSkill} invalid output after retries.`);
+                currentFeedback = `\n\n⚠️ Invalid output. Errors:\n- ${validation.errors.map(e => `${e.path}: ${e.message}`).join('\n- ')}\nCorrect your format.`;
+                if (attempt === MAX_RETRIES) {
+                    this.log(`⚠️ Maximum retries reached for ${targetSkill}. Invoking AI Judge...`, 'warning');
+                    const historyContext = `Skill: ${targetSkill}\nAttempts: ${MAX_RETRIES}\nLast Error:\n${currentFeedback}\nLast Result:\n${result}`;
+                    const evaluation = await this.evaluateTaskProgressUseCase.execute(historyContext);
+
+                    if (evaluation.status === 'CONTINUE') {
+                        this.log(`✅ AI Judge decided to CONTINUE: ${evaluation.reason}`, 'Conductor');
+                        attempt = 0;
+                        currentFeedback = `[AI Judge Hint] ${evaluation.reason}\n\n${currentFeedback}`;
+                        continue;
+                    }
+                    throw new Error(`${targetSkill} invalid output after retries. Reason: ${evaluation.reason}`);
+                }
             }
         }
         throw new Error('Unreachable');
+    }
+
+    private async selfCorrect(score: Score, assessment: WatchdogResult, sessionId: string, worktreePath?: string): Promise<Score | null> {
+        this.log('Attempting Self-Correction...', 'Conductor');
+        const scoreContext = { name: score.name, description: score.description };
+        const prompt = `
+# Self-Correction Request
+The current orchestration loop is stalled.
+Reason: ${assessment.reason}
+Suggestion: ${assessment.suggestion}
+
+## Current Score
+\`\`\`json
+${JSON.stringify(score, null, 2)}
+\`\`\`
+
+## Task
+Modify the Score (JSON) to break the loop. You can:
+1. Add a new Passage for debugging or environment fix.
+2. Change the sequence of Passages.
+3. Update Persona or Policies for a specific Passage.
+
+Output the ENTIRE updated Score in \`\`\`json:score-update\`\`\` format.
+`;
+        const result = await this.runPassage({
+            name: 'self-correction',
+            displayName: 'Self-Correction',
+            skill: 'architect',
+            outputContract: { format: 'json' }
+        }, sessionId, undefined, prompt, worktreePath, scoreContext);
+
+        try {
+            const match = result.match(/```json:score-update\n([\s\S]*?)\n```/);
+            if (match) {
+                const newScore = JSON.parse(match[1]);
+                fs.writeFileSync(path.join(process.cwd(), 'score.json'), JSON.stringify(newScore, null, 2));
+                return newScore;
+            }
+        } catch (e) {
+            this.log(`Failed to parse self-correction output: ${e}`, 'error');
+        }
+        return null;
+    }
+
+    private async reflect(history: AgentOutput[]): Promise<void> {
+        this.log('Performing Post-Task Reflection...', 'Conductor');
+        const prompt = `
+# Post-Task Reflection
+Analyze the following execution history and extract "Lessons Learned" and "Best Practices".
+Focus on:
+1. What went well?
+2. What were the obstacles and how were they overcome?
+3. What coding standards or rules should be added to prevent future issues?
+
+## Execution History
+${history.map((h, i) => `### Step ${i+1} (${h.skill})\n${h.output}`).join('\n\n')}
+
+## Output Requirement
+Output a Markdown document that can be used as a "Policy" facet.
+`;
+        const reflection = await this.runPassage({
+            name: 'reflection',
+            displayName: 'Post-Task Reflection',
+            skill: 'architect',
+            outputContract: { format: 'markdown' }
+        }, `reflect-${Date.now()}`, undefined, prompt, undefined, { name: 'Reflection', description: 'Post-task analysis' });
+
+        const policyDir = path.join(process.cwd(), 'facets', 'policy');
+        if (!fs.existsSync(policyDir)) fs.mkdirSync(policyDir, { recursive: true });
+        
+        const fileName = `learned-${new Date().toISOString().split('T')[0]}-${Math.floor(Math.random()*1000)}.md`;
+        fs.writeFileSync(path.join(policyDir, fileName), reflection);
+        this.log(`✅ New policy generated: ${fileName}`, 'Conductor');
     }
 
     /**
@@ -303,7 +481,7 @@ Output your next step in \`\`\`json:passage-result\`\`\` format.
                     }
                     return [];
                 },
-                () => null // TODO: Intervention
+                async () => null // Intervention placeholder
             );
 
             if (success) {
@@ -324,19 +502,9 @@ Output your next step in \`\`\`json:passage-result\`\`\` format.
 
     private async validateCode(cwd: string): Promise<{ passed: boolean; error?: string }> {
         this.log('Running Dynamic Validation...', 'Conductor');
-        const files = await this.listProjectFiles(cwd);
         
         // 簡易バリデーション (実際はもっと複雑だが、ここではエッセンスのみ)
         return this.runStaticAnalysis(cwd);
-    }
-
-    private async listProjectFiles(cwd: string): Promise<string[]> {
-        try {
-            const { stdout } = await execAsync('git ls-files', { cwd });
-            return stdout.split('\n').filter(f => f.length > 0);
-        } catch (e) {
-            return fs.readdirSync(cwd);
-        }
     }
 
     private async runStaticAnalysis(cwd: string): Promise<{ passed: boolean; error?: string }> {

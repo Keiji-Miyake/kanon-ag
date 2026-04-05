@@ -1,0 +1,12 @@
+{
+  "id": "score-1775290293357",
+  "status": "failed",
+  "phase": "interrupted",
+  "startedAt": "2026-04-04T08:11:33.360Z",
+  "updatedAt": "2026-04-04T08:26:31.622Z",
+  "workspace": "/home/user/workspace/kanon-ag/main",
+  "command": "score",
+  "targetTask": "Kanon Dogfooding: Loop Watchdog",
+  "currentPassage": "implement_watchdog",
+  "worktreePath": "/home/user/workspace/kanon-ag/main/worktree/kanon-task-kanon-dogfooding-loop-watchdog-1775290293251"
+}

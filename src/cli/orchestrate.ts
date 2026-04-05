@@ -11,7 +11,7 @@ const execAsync = promisify(exec);
 import { WebSocketServer, WebSocket } from 'ws';
 
 import { loadConfig, resolveCli, buildCommandArgs, ensureConfig } from './cli-resolver.js';
-import { spawnAgent, getAgentStatus, cleanupSession, checkTimeout, killAgent, DEFAULT_SPAWN_CONFIG } from './agent-spawner.js';
+import { spawnAgent, getAgentStatus, cleanupSession } from './agent-spawner.js';
 import { readSession, updateSession, initSession, SessionInfo } from './memory-manager.js';
 import { runDashboard } from './dashboard.js';
 
@@ -20,6 +20,8 @@ import { OrchestrationService } from '../usecases/orchestration/orchestrationSer
 
 // Score システムのインポート
 import { Score, Passage } from '../domain/models/score.js';
+import { Issue } from '../domain/models/feedback.js';
+
 
 
 // Global logger for real-time streaming to UI
@@ -1001,4 +1003,4 @@ async function runPassage(passage: Passage, sessionId: string, overrideSkill?: s
 }
 
 // Executed directly
-main();
+if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) { main(); }

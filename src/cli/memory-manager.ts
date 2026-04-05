@@ -398,9 +398,6 @@ function formatTaskBoardMd(tasks: TaskEntry[]): string {
     return md;
 }
 
-function parseTaskBoardMd(content: string): TaskEntry[] {
-    const lines = content.split('\n');
-    const tasks: TaskEntry[] = [];
 function formatResultMd(data: ResultData): string {
     const icon = data.status === 'success' ? '✅' : '❌';
     const elapsed = formatElapsed(data.elapsedMs);

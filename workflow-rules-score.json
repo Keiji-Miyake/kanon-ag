@@ -1,0 +1,30 @@
+{
+  "name": "Kanon Dogfooding: Workflow Rules",
+  "description": "Implement the Workflow Rules (Dynamic Branching) feature as designed in docs/dev/design-advanced-validation-rules.md",
+  "initialPassage": "implement_model_changes",
+  "passages": [
+    {
+      "name": "implement_model_changes",
+      "displayName": "Extend models with Rules",
+      "skill": "developer",
+      "persona": "developer",
+      "policies": ["coding-standard"],
+      "next": "implement_logic"
+    },
+    {
+      "name": "implement_logic",
+      "displayName": "Implement evaluation logic in RuleEngine",
+      "skill": "developer",
+      "persona": "developer",
+      "policies": ["coding-standard"],
+      "next": "verify_rules"
+    },
+    {
+      "name": "verify_rules",
+      "displayName": "Verify with Unit Tests",
+      "skill": "reviewer",
+      "persona": "reviewer",
+      "policies": ["coding-standard"]
+    }
+  ]
+}

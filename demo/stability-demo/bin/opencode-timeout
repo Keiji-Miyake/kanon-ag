@@ -1,2 +1,2 @@
 #!/bin/bash
-echo "{\"response\": \"Step 2 completed successfully from resume!\"}"
+echo "{\"response\": \"Task completed! ```json:passage-result\n{ \\\"next_passage\\\": null, \\\"reason\\\": \\\"All done\\\" }\n```\"}"
